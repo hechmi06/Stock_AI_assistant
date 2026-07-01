@@ -1,0 +1,95 @@
+<!doctype html>
+<html lang="fr">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Bourse IA - Analyse boursiere</title>
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <main class="app-shell">
+      <aside class="sidebar" aria-label="Navigation principale">
+        <div class="brand">
+          <span class="brand-mark">BI</span>
+          <div>
+            <strong>Bourse IA</strong>
+            <span>Analyse assistee</span>
+          </div>
+        </div>
+
+        <nav class="nav-list">
+          <button class="nav-item active" type="button">Analyse</button>
+          <button class="nav-item" type="button">Portefeuille</button>
+          <button class="nav-item" type="button">Alertes</button>
+          <button class="nav-item" type="button">Historique</button>
+        </nav>
+      </aside>
+
+      <section class="workspace">
+        <header class="topbar">
+          <div>
+            <p class="eyebrow">Phase 1</p>
+            <h1>Analyse boursiere</h1>
+          </div>
+          <form class="ticker-search" id="tickerForm">
+            <label class="sr-only" for="tickerInput">Ticker</label>
+            <input id="tickerInput" name="ticker" type="text" value="AAPL" autocomplete="off" />
+            <button type="submit">Analyser</button>
+          </form>
+        </header>
+
+        <section class="analysis-grid">
+          <article class="market-panel primary-panel">
+            <div class="panel-heading">
+              <div>
+                <p class="eyebrow" id="companySector">Technologie</p>
+                <h2 id="companyName">Apple Inc.</h2>
+              </div>
+              <span class="ticker-pill" id="tickerLabel">AAPL</span>
+            </div>
+
+            <div class="quote-row">
+              <div>
+                <span class="label">Prix actuel</span>
+                <strong id="currentPrice">$213.40</strong>
+              </div>
+              <div class="trend-positive" id="priceChange">+1.84%</div>
+            </div>
+
+            <canvas id="priceChart" width="900" height="360" aria-label="Graphique du prix"></canvas>
+          </article>
+
+          <article class="market-panel signal-panel">
+            <p class="eyebrow">Signal IA</p>
+            <div class="score-ring" id="scoreRing">
+              <span id="scoreValue">78</span>
+              <small>/100</small>
+            </div>
+            <h2 id="signalTitle">Acheter avec prudence</h2>
+            <p id="signalText">
+              Momentum positif, valorisation correcte et tendance technique favorable. Surveiller le niveau de risque.
+            </p>
+          </article>
+
+          <article class="market-panel metrics-panel">
+            <div class="panel-heading">
+              <h2>Indicateurs</h2>
+              <span class="muted">Synthese</span>
+            </div>
+            <div class="metric-list" id="metricList"></div>
+          </article>
+
+          <article class="market-panel checklist-panel">
+            <div class="panel-heading">
+              <h2>Checklist d'analyse</h2>
+              <span class="muted" id="checkCount">4/5</span>
+            </div>
+            <div class="checklist" id="checklist"></div>
+          </article>
+        </section>
+      </section>
+    </main>
+
+    <script src="script.js"></script>
+  </body>
+</html>

@@ -1,0 +1,54 @@
+services:
+  frontend:
+    build:
+      context: ./frontend
+    ports:
+      - "5173:5173"
+    environment:
+      - VITE_GATEWAY_URL=http://localhost:3000
+    volumes:
+      - ./frontend:/app
+      - /app/node_modules
+    depends_on:
+      - gateway
+
+  gateway:
+    build:
+      context: ./gateway
+    ports:
+      - "3000:3000"
+    environment:
+      - PORT=3000
+      - FRONTEND_ORIGIN=http://localhost:5173
+      - AI_BACKEND_URL=http://ai-backend:8000
+    volumes:
+      - ./gateway:/app
+      - /app/node_modules
+    depends_on:
+      - ai-backend
+
+  ai-backend:
+    build:
+      context: ./ai-backend
+    ports:
+      - "8000:8000"
+    environment:
+      - MCP_SERVER_URL=http://mcp-server:4100
+    volumes:
+      - ./ai-backend:/app
+    depends_on:
+      - mcp-server
+
+  mcp-server:
+    build:
+      context: ./mcp-server
+    ports:
+      - "4100:4100"
+    environment:
+      - PORT=4100
+      - TWELVE_DATA_API_KEY=${TWELVE_DATA_API_KEY}
+    stdin_open: true
+    tty: true
+    volumes:
+      - ./mcp-server:/app
+      - /app/node_modules
