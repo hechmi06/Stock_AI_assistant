@@ -1,3 +1,10 @@
+import { execFile } from "node:child_process";
+import { existsSync } from "node:fs";
+import { fileURLToPath } from "node:url";
+import { promisify } from "node:util";
+
+const execFileAsync = promisify(execFile);
+
 export type MarketRow = {
   symbol: string;
   name: string;
@@ -51,6 +58,62 @@ export type StockAnalysis = {
   checks: Array<{ title: string; detail: string; done: boolean }>;
 };
 
+export type MarketDataSource = "twelve_data" | "yfinance" | "alpha_vantage" | "financial_modeling_prep";
+export type PriceSource = MarketDataSource | "fallback";
+
+export type PriceQuote = {
+  ticker: string;
+  price: number | null;
+  change_percent: number | null;
+  currency: string | null;
+  exchange: string | null;
+  market_state: string | null;
+  source: PriceSource;
+};
+
+export type HistoricalPrice = {
+  date: string;
+  open: number | null;
+  high: number | null;
+  low: number | null;
+  close: number;
+  volume: number | null;
+};
+
+export type CompanyProfile = {
+  name: string | null;
+  sector: string | null;
+  industry: string | null;
+  country: string | null;
+  website: string | null;
+  market_cap: number | null;
+  currency: string | null;
+  exchange: string | null;
+};
+
+export type FinancialRatios = Record<string, number | null>;
+
+export type FinancialStatementsSummary = {
+  fiscal_date: string | null;
+  total_revenue: number | null;
+  net_income: number | null;
+  total_assets: number | null;
+  total_debt: number | null;
+  operating_cashflow: number | null;
+};
+
+export type MarketDataPayload = {
+  ticker: string;
+  price: PriceQuote | null;
+  historical_prices: HistoricalPrice[];
+  company_profile: CompanyProfile;
+  financial_ratios: FinancialRatios;
+  financial_statements_summary: FinancialStatementsSummary;
+  sources_used: MarketDataSource[];
+  used_fallback: boolean;
+  errors: string[];
+};
+
 const MARKET_SYMBOLS: Record<string, string> = {
   AAPL: "Apple Inc.",
   MSFT: "Microsoft Corp.",
@@ -64,10 +127,95 @@ const MARKET_SYMBOLS: Record<string, string> = {
 
 const LIVE_MARKET_SYMBOLS = ["AAPL", "MSFT", "NVDA", "GOOGL"];
 let marketCache: { timestamp: number; dashboard: MarketDashboard } | undefined;
+let marketDataCache: Record<string, { timestamp: number; payload: MarketDataPayload }> = {};
+let alphaFundamentalsCache: Record<
+  string,
+  {
+    timestamp: number;
+    payload: {
+      company_profile: CompanyProfile;
+      financial_ratios: FinancialRatios;
+      financial_statements_summary: FinancialStatementsSummary;
+      errors: string[];
+      used: boolean;
+    };
+  }
+> = {};
+let alphaFundamentalsInFlight: Partial<Record<string, Promise<{
+  company_profile: CompanyProfile;
+  financial_ratios: FinancialRatios;
+  financial_statements_summary: FinancialStatementsSummary;
+  errors: string[];
+  used: boolean;
+}>>> = {};
+let fmpFundamentalsCache: Record<
+  string,
+  {
+    timestamp: number;
+    payload: {
+      company_profile: CompanyProfile;
+      financial_ratios: FinancialRatios;
+      financial_statements_summary: FinancialStatementsSummary;
+      errors: string[];
+      used: boolean;
+    };
+  }
+> = {};
+let fmpFundamentalsInFlight: Partial<Record<string, Promise<{
+  company_profile: CompanyProfile;
+  financial_ratios: FinancialRatios;
+  financial_statements_summary: FinancialStatementsSummary;
+  errors: string[];
+  used: boolean;
+}>>> = {};
+
+function sleep(ms: number) {
+  return new Promise((resolve) => {
+    setTimeout(resolve, ms);
+  });
+}
 
 function toNumber(value: unknown, fallback = 0) {
   const numberValue = Number(value);
   return Number.isFinite(numberValue) ? numberValue : fallback;
+}
+
+function toNullableNumber(value: unknown) {
+  if (value === null || value === undefined || value === "" || value === "None") {
+    return null;
+  }
+  const numberValue = Number(value);
+  return Number.isFinite(numberValue) ? numberValue : null;
+}
+
+function firstNumber(...values: unknown[]) {
+  for (const value of values) {
+    const numberValue = toNullableNumber(value);
+    if (numberValue !== null) {
+      return numberValue;
+    }
+  }
+
+  return null;
+}
+
+function sumNumbers(...values: unknown[]) {
+  const numbers = values.map((value) => toNullableNumber(value)).filter((value): value is number => value !== null);
+  return numbers.length > 0 ? numbers.reduce((total, value) => total + value, 0) : null;
+}
+
+function firstString(...values: unknown[]) {
+  for (const value of values) {
+    if (typeof value === "string" && value.trim()) {
+      return value;
+    }
+  }
+
+  return null;
+}
+
+function hasAnyValue(payload: Record<string, unknown>) {
+  return Object.values(payload).some((value) => value !== null && value !== undefined && value !== "");
 }
 
 async function twelveDataGet(path: string, params: Record<string, string>) {
@@ -97,6 +245,75 @@ async function twelveDataGet(path: string, params: Record<string, string>) {
   } catch {
     return undefined;
   }
+}
+
+async function alphaVantageGet(params: Record<string, string>) {
+  const apiKey = process.env.ALPHA_VANTAGE_API_KEY?.trim();
+
+  if (!apiKey) {
+    return undefined;
+  }
+
+  const url = new URL("https://www.alphavantage.co/query");
+  Object.entries({ ...params, apikey: apiKey }).forEach(([key, value]) => {
+    url.searchParams.set(key, value);
+  });
+
+  try {
+    const response = await fetch(url, {
+      headers: { "User-Agent": "stock-ai-assistant-mcp/0.1" },
+      signal: AbortSignal.timeout(10_000),
+    });
+    const payload = await response.json();
+
+    if (!response.ok || payload?.["Error Message"] || payload?.Note || payload?.Information) {
+      return undefined;
+    }
+
+    return payload as Record<string, unknown>;
+  } catch {
+    return undefined;
+  }
+}
+
+async function fmpGet(path: string, params: Record<string, string> = {}) {
+  const apiKey = process.env.FMP_API_KEY?.trim();
+
+  if (!apiKey) {
+    return undefined;
+  }
+
+  const url = new URL(`https://financialmodelingprep.com/stable/${path}`);
+  Object.entries({ ...params, apikey: apiKey }).forEach(([key, value]) => {
+    url.searchParams.set(key, value);
+  });
+
+  try {
+    const response = await fetch(url, {
+      headers: { "User-Agent": "stock-ai-assistant-mcp/0.1" },
+      signal: AbortSignal.timeout(10_000),
+    });
+    const payload = await response.json();
+
+    if (!response.ok || payload?.Error || payload?.["Error Message"] || payload?.message) {
+      return undefined;
+    }
+
+    return payload as unknown;
+  } catch {
+    return undefined;
+  }
+}
+
+function firstAlphaReport(payload: Record<string, unknown> | undefined) {
+  const annual = Array.isArray(payload?.annualReports) ? (payload.annualReports[0] as Record<string, unknown> | undefined) : undefined;
+  const quarterly = Array.isArray(payload?.quarterlyReports) ? (payload.quarterlyReports[0] as Record<string, unknown> | undefined) : undefined;
+
+  return annual ?? quarterly;
+}
+
+function firstArrayItem(payload: unknown) {
+  return Array.isArray(payload) ? (payload[0] as Record<string, unknown> | undefined) : undefined;
 }
 
 async function fetchQuotes(symbols: string[]) {
@@ -131,6 +348,608 @@ async function fetchTimeSeries(symbol: string) {
     .map((item: { close?: unknown }) => toNumber(item.close))
     .filter((value: number) => value > 0)
     .map((value: number) => Number(value.toFixed(2)));
+}
+
+async function fetchTwelveHistoricalPrices(symbol: string, outputsize = "90"): Promise<HistoricalPrice[]> {
+  const payload = await twelveDataGet("time_series", {
+    symbol,
+    interval: "1day",
+    outputsize,
+  });
+  const values = Array.isArray(payload?.values) ? payload.values : [];
+
+  return values
+    .slice()
+    .reverse()
+    .map((item: { datetime?: unknown; open?: unknown; high?: unknown; low?: unknown; close?: unknown; volume?: unknown }) => {
+      const close = toNumber(item.close);
+      if (close <= 0) {
+        return undefined;
+      }
+
+      return {
+        date: String(item.datetime ?? ""),
+        open: toNumber(item.open) || null,
+        high: toNumber(item.high) || null,
+        low: toNumber(item.low) || null,
+        close: Number(close.toFixed(4)),
+        volume: toNumber(item.volume) || null,
+      };
+    })
+    .filter((item: HistoricalPrice | undefined): item is HistoricalPrice => Boolean(item));
+}
+
+function helperPath() {
+  const srcPath = new URL("./yfinance_helper.py", import.meta.url);
+  if (existsSync(srcPath)) {
+    return fileURLToPath(srcPath);
+  }
+
+  return fileURLToPath(new URL("../src/yfinance_helper.py", import.meta.url));
+}
+
+async function fetchYfinanceData(ticker: string, period = "6mo") {
+  const pythonPath = process.env.YFINANCE_PYTHON_PATH ?? process.env.PYTHON_PATH ?? "python";
+  const { stdout } = await execFileAsync(
+    pythonPath,
+    [helperPath(), "--ticker", ticker, "--period", period],
+    {
+      timeout: 15_000,
+      windowsHide: true,
+      maxBuffer: 1024 * 1024 * 4,
+    },
+  );
+
+  return JSON.parse(stdout) as {
+    ticker: string;
+    price?: PriceQuote | null;
+    historical_prices?: HistoricalPrice[];
+    company_profile?: CompanyProfile;
+    financial_ratios?: FinancialRatios;
+    financial_statements_summary?: FinancialStatementsSummary;
+    errors?: string[];
+  };
+}
+
+function quoteFromTwelveData(symbol: string, quote: Record<string, unknown> | undefined): PriceQuote | undefined {
+  const price = toNumber(quote?.close ?? quote?.price);
+
+  if (!quote || price <= 0) {
+    return undefined;
+  }
+
+  const previous = toNumber(quote.previous_close);
+  let changePercent = toNumber(quote.percent_change);
+
+  if (changePercent === 0 && previous > 0) {
+    changePercent = ((price - previous) / previous) * 100;
+  }
+
+  return {
+    ticker: symbol,
+    price: Number(price.toFixed(4)),
+    change_percent: Number(changePercent.toFixed(2)),
+    currency: typeof quote.currency === "string" ? quote.currency : null,
+    exchange: typeof quote.exchange === "string" ? quote.exchange : null,
+    market_state: typeof quote.is_market_open === "boolean" ? (quote.is_market_open ? "open" : "closed") : null,
+    source: "twelve_data",
+  };
+}
+
+function emptyProfile(): CompanyProfile {
+  return {
+    name: null,
+    sector: null,
+    industry: null,
+    country: null,
+    website: null,
+    market_cap: null,
+    currency: null,
+    exchange: null,
+  };
+}
+
+function emptyStatements(): FinancialStatementsSummary {
+  return {
+    fiscal_date: null,
+    total_revenue: null,
+    net_income: null,
+    total_assets: null,
+    total_debt: null,
+    operating_cashflow: null,
+  };
+}
+
+async function fetchAlphaVantageFundamentals(symbol: string): Promise<{
+  company_profile: CompanyProfile;
+  financial_ratios: FinancialRatios;
+  financial_statements_summary: FinancialStatementsSummary;
+  errors: string[];
+  used: boolean;
+}> {
+  const now = Date.now();
+  const cached = alphaFundamentalsCache[symbol];
+  const cacheTtl = cached?.payload.errors.length ? 60_000 : 6 * 60 * 60 * 1000;
+  if (cached && now - cached.timestamp < cacheTtl) {
+    return cached.payload;
+  }
+
+  if (alphaFundamentalsInFlight[symbol]) {
+    return alphaFundamentalsInFlight[symbol];
+  }
+
+  alphaFundamentalsInFlight[symbol] = fetchAlphaVantageFundamentalsUncached(symbol).finally(() => {
+    delete alphaFundamentalsInFlight[symbol];
+  });
+
+  const payload = await alphaFundamentalsInFlight[symbol];
+  if (payload.used) {
+    alphaFundamentalsCache[symbol] = { timestamp: now, payload };
+  }
+
+  return payload;
+}
+
+async function fetchAlphaVantageFundamentalsUncached(symbol: string): Promise<{
+  company_profile: CompanyProfile;
+  financial_ratios: FinancialRatios;
+  financial_statements_summary: FinancialStatementsSummary;
+  errors: string[];
+  used: boolean;
+}> {
+  const overview = await alphaVantageGet({ function: "OVERVIEW", symbol });
+  await sleep(400);
+  const income = await alphaVantageGet({ function: "INCOME_STATEMENT", symbol });
+  await sleep(400);
+  const balance = await alphaVantageGet({ function: "BALANCE_SHEET", symbol });
+  await sleep(400);
+  const cashflow = await alphaVantageGet({ function: "CASH_FLOW", symbol });
+  const errors: string[] = [];
+
+  if (!overview) {
+    errors.push("Alpha Vantage overview unavailable.");
+  }
+
+  const incomeReport = firstAlphaReport(income);
+  const balanceReport = firstAlphaReport(balance);
+  const cashflowReport = firstAlphaReport(cashflow);
+
+  if (!incomeReport) {
+    errors.push("Alpha Vantage income statement unavailable.");
+  }
+  if (!balanceReport) {
+    errors.push("Alpha Vantage balance sheet unavailable.");
+  }
+  if (!cashflowReport) {
+    errors.push("Alpha Vantage cash flow unavailable.");
+  }
+
+  const companyProfile: CompanyProfile = {
+    name: typeof overview?.Name === "string" ? overview.Name : null,
+    sector: typeof overview?.Sector === "string" ? overview.Sector : null,
+    industry: typeof overview?.Industry === "string" ? overview.Industry : null,
+    country: typeof overview?.Country === "string" ? overview.Country : null,
+    website: null,
+    market_cap: toNullableNumber(overview?.MarketCapitalization),
+    currency: typeof overview?.Currency === "string" ? overview.Currency : null,
+    exchange: typeof overview?.Exchange === "string" ? overview.Exchange : null,
+  };
+
+  const financialRatios: FinancialRatios = {
+    trailing_pe: toNullableNumber(overview?.TrailingPE),
+    forward_pe: toNullableNumber(overview?.ForwardPE),
+    price_to_book: toNullableNumber(overview?.PriceToBookRatio),
+    debt_to_equity: toNullableNumber(overview?.DebtToEquityRatio),
+    profit_margin: toNullableNumber(overview?.ProfitMargin),
+    return_on_equity: toNullableNumber(overview?.ReturnOnEquityTTM),
+    beta: toNullableNumber(overview?.Beta),
+    dividend_yield: toNullableNumber(overview?.DividendYield),
+    eps: toNullableNumber(overview?.EPS),
+  };
+
+  const statements: FinancialStatementsSummary = {
+    fiscal_date: firstString(incomeReport?.fiscalDateEnding, balanceReport?.fiscalDateEnding, cashflowReport?.fiscalDateEnding),
+    total_revenue: firstNumber(incomeReport?.totalRevenue, incomeReport?.revenue, overview?.RevenueTTM),
+    net_income: firstNumber(incomeReport?.netIncome, incomeReport?.netIncomeFromContinuingOperations, incomeReport?.comprehensiveIncomeNetOfTax),
+    total_assets: firstNumber(balanceReport?.totalAssets),
+    total_debt:
+      firstNumber(balanceReport?.shortLongTermDebtTotal, balanceReport?.totalDebt) ??
+      sumNumbers(balanceReport?.shortTermDebt, balanceReport?.currentLongTermDebt, balanceReport?.longTermDebtNoncurrent, balanceReport?.longTermDebt),
+    operating_cashflow: firstNumber(cashflowReport?.operatingCashflow, cashflowReport?.operatingCashFlow, cashflowReport?.cashflowFromOperatingActivities, cashflowReport?.cashFlowFromOperatingActivities),
+  };
+
+  return {
+    company_profile: companyProfile,
+    financial_ratios: financialRatios,
+    financial_statements_summary: statements,
+    errors,
+    used: hasAnyValue(companyProfile) || hasAnyValue(financialRatios) || hasAnyValue(statements),
+  };
+}
+
+async function fetchFmpFundamentals(symbol: string): Promise<{
+  company_profile: CompanyProfile;
+  financial_ratios: FinancialRatios;
+  financial_statements_summary: FinancialStatementsSummary;
+  errors: string[];
+  used: boolean;
+}> {
+  const now = Date.now();
+  const cached = fmpFundamentalsCache[symbol];
+  const cacheTtl = cached?.payload.errors.length ? 60_000 : 6 * 60 * 60 * 1000;
+  if (cached && now - cached.timestamp < cacheTtl) {
+    return cached.payload;
+  }
+
+  if (fmpFundamentalsInFlight[symbol]) {
+    return fmpFundamentalsInFlight[symbol];
+  }
+
+  fmpFundamentalsInFlight[symbol] = fetchFmpFundamentalsUncached(symbol).finally(() => {
+    delete fmpFundamentalsInFlight[symbol];
+  });
+
+  const payload = await fmpFundamentalsInFlight[symbol];
+  if (payload.used || payload.errors.length > 0) {
+    fmpFundamentalsCache[symbol] = { timestamp: now, payload };
+  }
+
+  return payload;
+}
+
+async function fetchFmpFundamentalsUncached(symbol: string): Promise<{
+  company_profile: CompanyProfile;
+  financial_ratios: FinancialRatios;
+  financial_statements_summary: FinancialStatementsSummary;
+  errors: string[];
+  used: boolean;
+}> {
+  const errors: string[] = [];
+  const [profilePayload, ratiosPayload, incomePayload, balancePayload, cashflowPayload] = await Promise.all([
+    fmpGet("profile", { symbol }),
+    fmpGet("ratios-ttm", { symbol }),
+    fmpGet("income-statement", { symbol, period: "annual", limit: "1" }),
+    fmpGet("balance-sheet-statement", { symbol, period: "annual", limit: "1" }),
+    fmpGet("cash-flow-statement", { symbol, period: "annual", limit: "1" }),
+  ]);
+
+  const profile = firstArrayItem(profilePayload);
+  const ratios = firstArrayItem(ratiosPayload);
+  const income = firstArrayItem(incomePayload);
+  const balance = firstArrayItem(balancePayload);
+  const cashflow = firstArrayItem(cashflowPayload);
+
+  if (!profile) {
+    errors.push("Financial Modeling Prep profile unavailable.");
+  }
+  if (!ratios) {
+    errors.push("Financial Modeling Prep ratios unavailable.");
+  }
+  if (!income) {
+    errors.push("Financial Modeling Prep income statement unavailable.");
+  }
+  if (!balance) {
+    errors.push("Financial Modeling Prep balance sheet unavailable.");
+  }
+  if (!cashflow) {
+    errors.push("Financial Modeling Prep cash flow unavailable.");
+  }
+
+  const companyProfile: CompanyProfile = {
+    name: firstString(profile?.companyName, profile?.companyNameLong, profile?.name),
+    sector: firstString(profile?.sector),
+    industry: firstString(profile?.industry),
+    country: firstString(profile?.country),
+    website: firstString(profile?.website),
+    market_cap: firstNumber(profile?.mktCap, profile?.marketCap),
+    currency: firstString(profile?.currency),
+    exchange: firstString(profile?.exchangeShortName, profile?.exchange),
+  };
+
+  const financialRatios: FinancialRatios = {
+    trailing_pe: firstNumber(ratios?.peRatioTTM, ratios?.priceEarningsRatioTTM),
+    price_to_book: firstNumber(ratios?.priceToBookRatioTTM),
+    debt_to_equity: firstNumber(ratios?.debtEquityRatioTTM, ratios?.debtToEquityTTM),
+    profit_margin: firstNumber(ratios?.netProfitMarginTTM),
+    return_on_equity: firstNumber(ratios?.returnOnEquityTTM),
+    dividend_yield: firstNumber(ratios?.dividendYielPercentageTTM, ratios?.dividendYieldTTM),
+  };
+
+  const statements: FinancialStatementsSummary = {
+    fiscal_date: firstString(income?.date, balance?.date, cashflow?.date, income?.calendarYear),
+    total_revenue: firstNumber(income?.revenue, income?.totalRevenue),
+    net_income: firstNumber(income?.netIncome, income?.netIncomeApplicableToCommonShares),
+    total_assets: firstNumber(balance?.totalAssets),
+    total_debt:
+      firstNumber(balance?.totalDebt, balance?.shortAndLongTermDebtTotal) ??
+      sumNumbers(balance?.shortTermDebt, balance?.longTermDebt, balance?.longTermDebtNonCurrent),
+    operating_cashflow: firstNumber(cashflow?.operatingCashFlow, cashflow?.netCashProvidedByOperatingActivities),
+  };
+
+  return {
+    company_profile: companyProfile,
+    financial_ratios: financialRatios,
+    financial_statements_summary: statements,
+    errors,
+    used: hasAnyValue(companyProfile) || hasAnyValue(financialRatios) || hasAnyValue(statements),
+  };
+}
+
+function mergeProfile(base: CompanyProfile, next: CompanyProfile): CompanyProfile {
+  return {
+    name: base.name ?? next.name,
+    sector: base.sector ?? next.sector,
+    industry: base.industry ?? next.industry,
+    country: base.country ?? next.country,
+    website: base.website ?? next.website,
+    market_cap: base.market_cap ?? next.market_cap,
+    currency: base.currency ?? next.currency,
+    exchange: base.exchange ?? next.exchange,
+  };
+}
+
+function mergeRatios(base: FinancialRatios, next: FinancialRatios): FinancialRatios {
+  return Object.fromEntries(
+    Array.from(new Set([...Object.keys(base), ...Object.keys(next)])).map((key) => [key, base[key] ?? next[key] ?? null]),
+  );
+}
+
+function mergeStatements(base: FinancialStatementsSummary, next: FinancialStatementsSummary): FinancialStatementsSummary {
+  return {
+    fiscal_date: base.fiscal_date ?? next.fiscal_date,
+    total_revenue: base.total_revenue ?? next.total_revenue,
+    net_income: base.net_income ?? next.net_income,
+    total_assets: base.total_assets ?? next.total_assets,
+    total_debt: base.total_debt ?? next.total_debt,
+    operating_cashflow: base.operating_cashflow ?? next.operating_cashflow,
+  };
+}
+
+function fallbackHistoricalPrices(symbol: string, price: number | null | undefined): HistoricalPrice[] {
+  if (!price || price <= 0 || !MARKET_SYMBOLS[symbol]) {
+    return [];
+  }
+
+  const points: HistoricalPrice[] = [];
+  for (let index = 9; index >= 0; index -= 1) {
+    const date = new Date();
+    date.setUTCDate(date.getUTCDate() - index);
+    const drift = (9 - index - 4) * 0.006;
+    const close = Number((price * (1 + drift)).toFixed(4));
+    points.push({
+      date: date.toISOString().slice(0, 10),
+      open: Number((close * 0.996).toFixed(4)),
+      high: Number((close * 1.006).toFixed(4)),
+      low: Number((close * 0.992).toFixed(4)),
+      close,
+      volume: null,
+    });
+  }
+
+  return points;
+}
+
+export async function getStockPrice(ticker: string): Promise<PriceQuote | null> {
+  const symbol = ticker.trim().toUpperCase();
+  const quotes = await fetchQuotes([symbol]);
+  const twelveQuote = quoteFromTwelveData(symbol, quotes[symbol] as Record<string, unknown> | undefined);
+
+  if (twelveQuote) {
+    return twelveQuote;
+  }
+
+  try {
+    const yfinance = await fetchYfinanceData(symbol, "5d");
+    return yfinance.price ?? null;
+  } catch {
+    return null;
+  }
+}
+
+export async function getHistoricalPrices(ticker: string, period = "6mo"): Promise<HistoricalPrice[]> {
+  const symbol = ticker.trim().toUpperCase();
+
+  try {
+    const yfinance = await fetchYfinanceData(symbol, period);
+    const history = yfinance.historical_prices ?? [];
+    if (history.length > 0) {
+      return history;
+    }
+  } catch {
+    // Fall through to Twelve Data historical fallback.
+  }
+
+  return fetchTwelveHistoricalPrices(symbol);
+}
+
+export async function getCompanyProfile(ticker: string): Promise<CompanyProfile> {
+  const symbol = ticker.trim().toUpperCase();
+
+  try {
+    const yfinance = await fetchYfinanceData(symbol, "1mo");
+    const profile = yfinance.company_profile ?? emptyProfile();
+    if (profile.name) {
+      return profile;
+    }
+  } catch {
+    // Fall through to Alpha Vantage.
+  }
+
+  const alpha = await fetchAlphaVantageFundamentals(symbol);
+  return alpha.company_profile;
+}
+
+export async function getFinancialStatements(ticker: string): Promise<{
+  financial_ratios: FinancialRatios;
+  financial_statements_summary: FinancialStatementsSummary;
+}> {
+  const symbol = ticker.trim().toUpperCase();
+
+  try {
+    const yfinance = await fetchYfinanceData(symbol, "1mo");
+    const result = {
+      financial_ratios: yfinance.financial_ratios ?? {},
+      financial_statements_summary: yfinance.financial_statements_summary ?? emptyStatements(),
+    };
+    if (
+      Object.values(result.financial_ratios).some((value) => value != null) ||
+      Object.values(result.financial_statements_summary).some((value) => value != null)
+    ) {
+      return result;
+    }
+  } catch {
+    // Fall through to Alpha Vantage.
+  }
+
+  const alpha = await fetchAlphaVantageFundamentals(symbol);
+  const fmp = await fetchFmpFundamentals(symbol);
+
+  return {
+    financial_ratios: mergeRatios(alpha.financial_ratios, fmp.financial_ratios),
+    financial_statements_summary: mergeStatements(fmp.financial_statements_summary, alpha.financial_statements_summary),
+  };
+}
+
+export async function getMarketData(ticker: string, period = "6mo"): Promise<MarketDataPayload> {
+  const symbol = ticker.trim().toUpperCase();
+  const cacheKey = `${symbol}:${period}`;
+  const now = Date.now();
+  const cached = marketDataCache[cacheKey];
+  if (cached && now - cached.timestamp < 60_000) {
+    return cached.payload;
+  }
+
+  const sources = new Set<MarketDataSource>();
+  const errors: string[] = [];
+  let usedFallback = false;
+  let price: PriceQuote | null = null;
+  let historicalPrices: HistoricalPrice[] = [];
+  let companyProfile = emptyProfile();
+  let financialRatios: FinancialRatios = {};
+  let financialStatementsSummary = emptyStatements();
+
+  const quotePayload = await fetchQuotes([symbol]);
+  price = quoteFromTwelveData(symbol, quotePayload[symbol] as Record<string, unknown> | undefined) ?? null;
+
+  if (price) {
+    sources.add("twelve_data");
+  } else {
+    errors.push("Twelve Data price unavailable.");
+  }
+
+  try {
+    const yfinance = await fetchYfinanceData(symbol, period);
+    const yfinanceUsed =
+      Boolean(yfinance.price) ||
+      Boolean(yfinance.historical_prices?.length) ||
+      Boolean(yfinance.company_profile?.name) ||
+      Object.values(yfinance.financial_ratios ?? {}).some((value) => value != null) ||
+      Object.values(yfinance.financial_statements_summary ?? {}).some((value) => value != null);
+
+    if (!price && yfinance.price) {
+      price = yfinance.price;
+    }
+
+    historicalPrices = yfinance.historical_prices ?? [];
+    companyProfile = yfinance.company_profile ?? companyProfile;
+    financialRatios = yfinance.financial_ratios ?? {};
+    financialStatementsSummary = yfinance.financial_statements_summary ?? financialStatementsSummary;
+    if (yfinanceUsed) {
+      sources.add("yfinance");
+    }
+    errors.push(...(yfinance.errors ?? []));
+  } catch (error) {
+    errors.push(`yfinance unavailable: ${error instanceof Error ? error.message : "unknown error"}`);
+  }
+
+  try {
+    const alpha = await fetchAlphaVantageFundamentals(symbol);
+    if (alpha.used) {
+      sources.add("alpha_vantage");
+      companyProfile = mergeProfile(companyProfile, alpha.company_profile);
+      financialRatios = mergeRatios(financialRatios, alpha.financial_ratios);
+      financialStatementsSummary = mergeStatements(financialStatementsSummary, alpha.financial_statements_summary);
+    }
+    errors.push(...alpha.errors);
+  } catch (error) {
+    errors.push(`Alpha Vantage unavailable: ${error instanceof Error ? error.message : "unknown error"}`);
+  }
+
+  try {
+    const fmp = await fetchFmpFundamentals(symbol);
+    if (fmp.used) {
+      sources.add("financial_modeling_prep");
+      companyProfile = mergeProfile(companyProfile, fmp.company_profile);
+      financialRatios = mergeRatios(financialRatios, fmp.financial_ratios);
+      financialStatementsSummary = mergeStatements(fmp.financial_statements_summary, financialStatementsSummary);
+    }
+    if (process.env.FMP_API_KEY?.trim()) {
+      errors.push(...fmp.errors);
+    }
+  } catch (error) {
+    errors.push(`Financial Modeling Prep unavailable: ${error instanceof Error ? error.message : "unknown error"}`);
+  }
+
+  if (historicalPrices.length === 0) {
+    const twelveHistory = await fetchTwelveHistoricalPrices(symbol);
+    if (twelveHistory.length > 0) {
+      sources.add("twelve_data");
+      historicalPrices = twelveHistory;
+    } else {
+      errors.push("Twelve Data historical prices unavailable.");
+    }
+  }
+
+  if (historicalPrices.length === 0 && price?.price) {
+    const fallbackHistory = fallbackHistoricalPrices(symbol, price.price);
+    if (fallbackHistory.length > 0) {
+      usedFallback = true;
+      historicalPrices = fallbackHistory;
+      errors.push("Using generated fallback history because external history was unavailable.");
+    }
+  }
+
+  if (!companyProfile.name && MARKET_SYMBOLS[symbol]) {
+    usedFallback = true;
+    companyProfile = {
+      ...companyProfile,
+      name: MARKET_SYMBOLS[symbol],
+      currency: companyProfile.currency ?? price?.currency ?? "USD",
+      exchange: companyProfile.exchange ?? price?.exchange ?? null,
+    };
+  }
+
+  if (!price) {
+    const fallback = fallbackMarketRows().find((row) => row.symbol === symbol);
+    if (fallback) {
+      usedFallback = true;
+      price = {
+        ticker: symbol,
+        price: fallback.mid,
+        change_percent: fallback.variation,
+        currency: "USD",
+        exchange: null,
+        market_state: null,
+        source: "fallback",
+      };
+      companyProfile = { ...companyProfile, name: companyProfile.name ?? fallback.name };
+    }
+  }
+
+  const payload = {
+    ticker: symbol,
+    price,
+    historical_prices: historicalPrices,
+    company_profile: companyProfile,
+    financial_ratios: financialRatios,
+    financial_statements_summary: financialStatementsSummary,
+    sources_used: Array.from(sources),
+    used_fallback: usedFallback,
+    errors,
+  };
+
+  marketDataCache[cacheKey] = { timestamp: now, payload };
+  return payload;
 }
 
 function rowFromQuote(symbol: string, quote: Record<string, unknown> | undefined): MarketRow | undefined {

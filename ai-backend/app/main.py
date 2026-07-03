@@ -5,7 +5,10 @@ import requests
 from fastapi import FastAPI
 from pydantic import BaseModel, ValidationError
 
+from app.agents import MarketDataAgent, MarketDataResult
+
 app = FastAPI(title="Stock AI Assistant Backend", version="0.1.0")
+market_data_agent = MarketDataAgent()
 
 
 class Metric(BaseModel):
@@ -231,19 +234,109 @@ def mcp_get(path: str) -> dict | None:
         return None
 
 
+def analysis_from_market_data(result: MarketDataResult) -> StockAnalysis | None:
+    if result.status == "failed" or result.price is None:
+        return None
+
+    values = [point.close for point in result.historical_prices[-10:]]
+    if not values and result.price is not None:
+        values = [result.price]
+
+    change = result.change_percent or 0
+    score = max(15, min(95, round(58 + change * 6)))
+    signal = (
+        "Acheter"
+        if score >= 80
+        else "Acheter avec prudence"
+        if score >= 65
+        else "Surveiller"
+        if score >= 50
+        else "Eviter pour le moment"
+    )
+    source_label = ", ".join(result.sources_used) if result.sources_used else "unknown"
+    fallback_note = " Fallback interne utilise." if result.used_fallback else ""
+    profile = result.company_profile
+    has_ratios = any(value is not None for value in result.financial_ratios.values())
+    has_statements = any(value is not None for value in result.financial_statements_summary.model_dump().values())
+    has_fundamentals = has_ratios or has_statements
+
+    return StockAnalysis(
+        ticker=result.ticker,
+        name=profile.name or f"{result.ticker} Corp.",
+        sector=profile.sector or "Marche actions",
+        price=round(result.price, 2),
+        change=round(change, 2),
+        score=score,
+        signal=signal,
+        text=(
+            "Analyse construite depuis MarketDataAgent. "
+            f"Sources utilisees : {source_label}. "
+            f"Derniere variation disponible : {change:+.2f}%.{fallback_note}"
+        ),
+        values=values,
+        metrics=[
+            Metric(label="Agent", value="MarketDataAgent"),
+            Metric(label="Sources", value=source_label),
+            Metric(label="Secteur", value=profile.sector or "N/A"),
+            Metric(label="Market cap", value=f"{profile.market_cap:,.0f}" if profile.market_cap else "N/A"),
+        ],
+        checks=[
+            ChecklistItem(
+                title="Prix",
+                detail="Prix recu via une source marche ou un secours interne",
+                done=result.price is not None,
+            ),
+            ChecklistItem(
+                title="Historique",
+                detail=f"{len(result.historical_prices)} points historiques disponibles",
+                done=len(result.historical_prices) > 1,
+            ),
+            ChecklistItem(
+                title="Profil",
+                detail=profile.name or "Profil entreprise incomplet",
+                done=profile.name is not None,
+            ),
+            ChecklistItem(
+                title="Fondamentaux",
+                detail="Fondamentaux disponibles" if has_fundamentals else "Fondamentaux indisponibles",
+                done=has_fundamentals,
+            ),
+            ChecklistItem(
+                title="Statut agent",
+                detail=result.status,
+                done=result.status in {"success", "partial"},
+            ),
+        ],
+    )
+
+
 @app.get("/health")
 def health() -> dict[str, str]:
     return {
         "service": "ai-backend",
         "status": "ok",
         "mcp_server_url": os.getenv("MCP_SERVER_URL", "http://localhost:4100"),
+        "ollama_enabled": os.getenv("OLLAMA_ENABLED", "false"),
+        "ollama_base_url": os.getenv("OLLAMA_BASE_URL", "http://localhost:11434"),
+        "ollama_model": os.getenv("OLLAMA_MODEL", "qwen2.5:3b"),
         "timestamp": datetime.now(timezone.utc).isoformat(),
     }
+
+
+@app.get("/agents/market-data/{ticker}", response_model=MarketDataResult)
+def run_market_data_agent(ticker: str) -> MarketDataResult:
+    return market_data_agent.run(ticker)
 
 
 @app.get("/analyze/{ticker}", response_model=StockAnalysis)
 def analyze_ticker(ticker: str) -> StockAnalysis:
     normalized_ticker = ticker.strip().upper()
+    market_data_result = market_data_agent.run(normalized_ticker)
+    market_data_analysis = analysis_from_market_data(market_data_result)
+
+    if market_data_analysis:
+        return market_data_analysis
+
     payload = mcp_get(f"analyze/{normalized_ticker}")
 
     if payload:

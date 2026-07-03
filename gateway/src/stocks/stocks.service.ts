@@ -51,6 +51,51 @@ type MarketDashboard = {
   };
 };
 
+type MarketDataResult = {
+  ticker: string;
+  status: "success" | "partial" | "failed";
+  sources_used: Array<"twelve_data" | "yfinance" | "alpha_vantage" | "financial_modeling_prep">;
+  used_fallback: boolean;
+  price: number | null;
+  change_percent: number | null;
+  historical_prices: Array<{
+    date: string;
+    open: number | null;
+    high: number | null;
+    low: number | null;
+    close: number;
+    volume: number | null;
+  }>;
+  company_profile: {
+    name: string | null;
+    sector: string | null;
+    industry: string | null;
+    country: string | null;
+    website: string | null;
+    market_cap: number | null;
+    currency: string | null;
+    exchange: string | null;
+  };
+  financial_ratios: Record<string, number | null>;
+  financial_statements_summary: {
+    fiscal_date: string | null;
+    total_revenue: number | null;
+    net_income: number | null;
+    total_assets: number | null;
+    total_debt: number | null;
+    operating_cashflow: number | null;
+  };
+  errors: string[];
+  slm_summary: {
+    provider: string;
+    model: string;
+    summary: string;
+    data_quality: string;
+    key_points: string[];
+    warnings: string[];
+  } | null;
+};
+
 const fallbackAnalysis: Record<string, StockAnalysis> = {
   AAPL: {
     ticker: "AAPL",
@@ -139,6 +184,51 @@ export class StocksService {
         ...fallbackAnalysis.AAPL,
         ticker: normalizedTicker || "AAPL",
         name: `${normalizedTicker || "AAPL"} Corp.`,
+      };
+    }
+  }
+
+  async getMarketData(ticker: string): Promise<MarketDataResult> {
+    const normalizedTicker = ticker.trim().toUpperCase();
+
+    try {
+      const response = await fetch(`${this.aiBackendUrl}/agents/market-data/${normalizedTicker}`);
+
+      if (!response.ok) {
+        throw new Error(`AI backend returned ${response.status}`);
+      }
+
+      return (await response.json()) as MarketDataResult;
+    } catch {
+      return {
+        ticker: normalizedTicker || "AAPL",
+        status: "failed",
+        sources_used: [],
+        used_fallback: false,
+        price: null,
+        change_percent: null,
+        historical_prices: [],
+        company_profile: {
+          name: null,
+          sector: null,
+          industry: null,
+          country: null,
+          website: null,
+          market_cap: null,
+          currency: null,
+          exchange: null,
+        },
+        financial_ratios: {},
+        financial_statements_summary: {
+          fiscal_date: null,
+          total_revenue: null,
+          net_income: null,
+          total_assets: null,
+          total_debt: null,
+          operating_cashflow: null,
+        },
+        errors: ["Gateway could not reach the AI backend MarketDataAgent endpoint."],
+        slm_summary: null,
       };
     }
   }

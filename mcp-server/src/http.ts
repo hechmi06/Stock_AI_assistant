@@ -1,5 +1,13 @@
 import { createServer, type ServerResponse } from "node:http";
-import { analyzeStock, getMarketDashboard } from "./marketData.js";
+import {
+  analyzeStock,
+  getCompanyProfile,
+  getFinancialStatements,
+  getHistoricalPrices,
+  getMarketDashboard,
+  getMarketData,
+  getStockPrice,
+} from "./marketData.js";
 
 function sendJson(response: ServerResponse, status: number, payload: unknown) {
   response.writeHead(status, {
@@ -24,6 +32,47 @@ const server = createServer(async (request, response) => {
 
     if (request.method === "GET" && url.pathname === "/market-dashboard") {
       sendJson(response, 200, await getMarketDashboard());
+      return;
+    }
+
+    const marketDataMatch = url.pathname.match(/^\/market-data\/([^/]+)$/);
+    if (request.method === "GET" && marketDataMatch) {
+      sendJson(response, 200, await getMarketData(decodeURIComponent(marketDataMatch[1]), url.searchParams.get("period") ?? "6mo"));
+      return;
+    }
+
+    const priceMatch = url.pathname.match(/^\/tools\/stock-price\/([^/]+)$/);
+    if (request.method === "GET" && priceMatch) {
+      const price = await getStockPrice(decodeURIComponent(priceMatch[1]));
+      sendJson(response, price ? 200 : 404, price ?? { status: "missing_price" });
+      return;
+    }
+
+    const historyMatch = url.pathname.match(/^\/tools\/historical-prices\/([^/]+)$/);
+    if (request.method === "GET" && historyMatch) {
+      sendJson(response, 200, {
+        ticker: decodeURIComponent(historyMatch[1]).trim().toUpperCase(),
+        period: url.searchParams.get("period") ?? "6mo",
+        historical_prices: await getHistoricalPrices(decodeURIComponent(historyMatch[1]), url.searchParams.get("period") ?? "6mo"),
+      });
+      return;
+    }
+
+    const profileMatch = url.pathname.match(/^\/tools\/company-profile\/([^/]+)$/);
+    if (request.method === "GET" && profileMatch) {
+      sendJson(response, 200, {
+        ticker: decodeURIComponent(profileMatch[1]).trim().toUpperCase(),
+        company_profile: await getCompanyProfile(decodeURIComponent(profileMatch[1])),
+      });
+      return;
+    }
+
+    const statementsMatch = url.pathname.match(/^\/tools\/financial-statements\/([^/]+)$/);
+    if (request.method === "GET" && statementsMatch) {
+      sendJson(response, 200, {
+        ticker: decodeURIComponent(statementsMatch[1]).trim().toUpperCase(),
+        ...(await getFinancialStatements(decodeURIComponent(statementsMatch[1]))),
+      });
       return;
     }
 

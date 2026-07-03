@@ -34,6 +34,9 @@ services:
       - "8000:8000"
     environment:
       - MCP_SERVER_URL=http://mcp-server:4100
+      - OLLAMA_ENABLED=${OLLAMA_ENABLED:-false}
+      - OLLAMA_BASE_URL=${OLLAMA_BASE_URL:-http://host.docker.internal:11434}
+      - OLLAMA_MODEL=${OLLAMA_MODEL:-qwen2.5:3b}
     volumes:
       - ./ai-backend:/app
     depends_on:
@@ -47,6 +50,8 @@ services:
     environment:
       - PORT=4100
       - TWELVE_DATA_API_KEY=${TWELVE_DATA_API_KEY}
+      - ALPHA_VANTAGE_API_KEY=${ALPHA_VANTAGE_API_KEY}
+      - FMP_API_KEY=${FMP_API_KEY}
     stdin_open: true
     tty: true
     volumes:
