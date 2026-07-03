@@ -10,3 +10,4 @@ __pycache__/
 *.pyc
 *.tsbuildinfo
 *.log
+eval_report.json

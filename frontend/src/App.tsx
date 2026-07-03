@@ -18,6 +18,7 @@ import {
   WalletCards,
 } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
+import { AgentMetrics } from "./components/AgentMetrics";
 import { fetchMarketDashboard } from "./services/analysisApi";
 import type { MarketDashboard, MarketRow } from "./types";
 
@@ -94,6 +95,7 @@ export function App() {
   const [dashboard, setDashboard] = useState<MarketDashboard>(fallbackDashboard);
   const [selectedSymbol, setSelectedSymbol] = useState("AAPL");
   const [loading, setLoading] = useState(false);
+  const [view, setView] = useState<"trading" | "dashboard">("trading");
 
   async function loadDashboard() {
     setLoading(true);
@@ -167,10 +169,18 @@ export function App() {
 
           <div className="top-actions">
             <div className="segmented">
-              <button className="selected" type="button">
+              <button
+                className={view === "trading" ? "selected" : ""}
+                type="button"
+                onClick={() => setView("trading")}
+              >
                 <LineChart size={16} /> Trading
               </button>
-              <button type="button">
+              <button
+                className={view === "dashboard" ? "selected" : ""}
+                type="button"
+                onClick={() => setView("dashboard")}
+              >
                 <Grid2X2 size={16} /> Dashboard
               </button>
             </div>
@@ -184,6 +194,9 @@ export function App() {
           </div>
         </header>
 
+        {view === "dashboard" ? (
+          <AgentMetrics />
+        ) : (
         <section className="market-layout compact-layout">
           <aside className="panel ai-panel">
             <div className="panel-title">
@@ -290,6 +303,7 @@ export function App() {
             </article>
           </section>
         </section>
+        )}
       </section>
     </main>
   );

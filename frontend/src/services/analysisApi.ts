@@ -1,5 +1,5 @@
 import { mockStocks } from "../data/mockStocks";
-import type { MarketDashboard, StockAnalysis } from "../types";
+import type { EvaluationReport, MarketDashboard, StockAnalysis } from "../types";
 
 export async function fetchStockAnalysis(ticker: string): Promise<StockAnalysis> {
   const normalizedTicker = ticker.trim().toUpperCase();
@@ -59,4 +59,15 @@ export async function fetchMarketDashboard(): Promise<MarketDashboard> {
   } catch {
     return fallbackDashboard;
   }
+}
+
+export async function fetchAgentEvaluation(ticker: string): Promise<EvaluationReport> {
+  const normalizedTicker = ticker.trim().toUpperCase();
+  const response = await fetch(`/api/stocks/${normalizedTicker}/evaluation`);
+
+  if (!response.ok) {
+    throw new Error(`Gateway returned ${response.status}`);
+  }
+
+  return await response.json();
 }

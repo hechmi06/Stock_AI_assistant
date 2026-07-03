@@ -48,7 +48,7 @@ class FinancialStatementsSummary(BaseModel):
 
 
 class SlmSummary(BaseModel):
-    provider: str = "ollama"
+    provider: str = "nebius"
     model: str
     summary: str
     data_quality: str
@@ -67,6 +67,7 @@ class MarketDataResult(BaseModel):
     company_profile: CompanyProfile = Field(default_factory=CompanyProfile)
     financial_ratios: dict[str, float | None] = Field(default_factory=dict)
     financial_statements_summary: FinancialStatementsSummary = Field(default_factory=FinancialStatementsSummary)
+    warnings: list[str] = Field(default_factory=list)
     errors: list[str] = Field(default_factory=list)
     raw_price: PriceQuote | None = None
     slm_summary: SlmSummary | None = None

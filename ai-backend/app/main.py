@@ -1,11 +1,29 @@
 import os
 from datetime import datetime, timezone
+from pathlib import Path
 
 import requests
 from fastapi import FastAPI
 from pydantic import BaseModel, ValidationError
 
 from app.agents import MarketDataAgent, MarketDataResult
+from app.agents.evaluation import EvaluationReport, evaluate_market_data
+
+
+def _load_root_env() -> None:
+    """Charge le .env racine en local (Docker injecte deja ces variables)."""
+    env_path = Path(__file__).resolve().parents[2] / ".env"
+    if not env_path.exists():
+        return
+    for raw in env_path.read_text(encoding="utf-8").splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        os.environ.setdefault(key.strip(), value.strip())
+
+
+_load_root_env()
 
 app = FastAPI(title="Stock AI Assistant Backend", version="0.1.0")
 market_data_agent = MarketDataAgent()
@@ -311,14 +329,18 @@ def analysis_from_market_data(result: MarketDataResult) -> StockAnalysis | None:
 
 
 @app.get("/health")
-def health() -> dict[str, str]:
+def health() -> dict[str, object]:
+    slm_enabled = bool(os.getenv("NEBIUS_API_KEY", "").strip()) and os.getenv(
+        "NEBIUS_ENABLED", "true"
+    ).strip().lower() in {"1", "true", "yes", "on"}
     return {
         "service": "ai-backend",
         "status": "ok",
         "mcp_server_url": os.getenv("MCP_SERVER_URL", "http://localhost:4100"),
-        "ollama_enabled": os.getenv("OLLAMA_ENABLED", "false"),
-        "ollama_base_url": os.getenv("OLLAMA_BASE_URL", "http://localhost:11434"),
-        "ollama_model": os.getenv("OLLAMA_MODEL", "qwen2.5:3b"),
+        "slm_provider": "nebius",
+        "slm_enabled": slm_enabled,
+        "slm_base_url": os.getenv("NEBIUS_BASE_URL", "https://api.studio.nebius.com/v1"),
+        "slm_model": os.getenv("NEBIUS_MODEL", "Qwen/Qwen3-30B-A3B-Instruct-2507"),
         "timestamp": datetime.now(timezone.utc).isoformat(),
     }
 
@@ -326,6 +348,12 @@ def health() -> dict[str, str]:
 @app.get("/agents/market-data/{ticker}", response_model=MarketDataResult)
 def run_market_data_agent(ticker: str) -> MarketDataResult:
     return market_data_agent.run(ticker)
+
+
+@app.get("/agents/market-data/{ticker}/evaluation", response_model=EvaluationReport)
+def evaluate_market_data_agent(ticker: str) -> EvaluationReport:
+    result = market_data_agent.run(ticker)
+    return evaluate_market_data(result)
 
 
 @app.get("/analyze/{ticker}", response_model=StockAnalysis)

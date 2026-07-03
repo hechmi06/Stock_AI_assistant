@@ -67,10 +67,10 @@ class FinancialStatementsSummaryDto {
 }
 
 class SlmSummaryDto {
-  @ApiProperty({ example: "ollama" })
+  @ApiProperty({ example: "nebius" })
   provider!: string;
 
-  @ApiProperty({ example: "qwen2.5:3b" })
+  @ApiProperty({ example: "Qwen/Qwen3-30B-A3B-Instruct-2507" })
   model!: string;
 
   @ApiProperty({ example: "Les donnees principales sont presentes et les fondamentaux sont complets." })
@@ -128,7 +128,18 @@ export class MarketDataResultDto {
   @ApiProperty({ type: FinancialStatementsSummaryDto })
   financial_statements_summary!: FinancialStatementsSummaryDto;
 
-  @ApiProperty({ example: ["Alpha Vantage daily rate limit reached."], type: [String] })
+  @ApiProperty({
+    example: ["yfinance info unavailable: Too Many Requests.", "Alpha Vantage overview unavailable."],
+    type: [String],
+    description: "Degradations de source non bloquantes (la donnee a ete obtenue ailleurs).",
+  })
+  warnings!: string[];
+
+  @ApiProperty({
+    example: [],
+    type: [String],
+    description: "Erreurs fatales ayant empeche la collecte.",
+  })
   errors!: string[];
 
   @ApiProperty({ type: SlmSummaryDto, nullable: true })

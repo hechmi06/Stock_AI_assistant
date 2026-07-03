@@ -755,3 +755,281 @@ h1 {
     padding: 0 12px;
   }
 }
+
+/* ===== Page Metriques des agents ===== */
+.metrics-page {
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+  padding: 18px;
+  overflow-y: auto;
+}
+
+.metrics-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  background: var(--nd-panel);
+  border: 1px solid var(--nd-border);
+  border-radius: var(--nd-r-lg);
+  padding: 16px 18px;
+  box-shadow: var(--nd-shadow-sm);
+}
+
+.metrics-title {
+  display: flex;
+  gap: 12px;
+  align-items: flex-start;
+  color: var(--nd-accent);
+}
+
+.metrics-title h2 {
+  margin: 0;
+  font-size: 18px;
+  color: var(--nd-text);
+}
+
+.metrics-title p {
+  margin: 4px 0 0;
+  font-size: 13px;
+  color: var(--nd-text-secondary);
+  max-width: 640px;
+}
+
+.metrics-tickers {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.ticker-chip {
+  border: 1px solid var(--nd-border-strong);
+  background: var(--nd-bg-subtle);
+  color: var(--nd-text-secondary);
+  padding: 7px 14px;
+  border-radius: var(--nd-r-pill);
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all var(--nd-t-fast) var(--nd-ease);
+}
+
+.ticker-chip:hover {
+  background: var(--nd-bg-hover);
+  color: var(--nd-text);
+}
+
+.ticker-chip.active {
+  background: var(--nd-accent-grad);
+  border-color: transparent;
+  color: #fff;
+}
+
+.metrics-error {
+  background: #fef2f2;
+  border: 1px solid #fecaca;
+  color: var(--nd-error);
+  padding: 12px 16px;
+  border-radius: var(--nd-r-md);
+  font-size: 13px;
+}
+
+.metrics-loading {
+  color: var(--nd-text-muted);
+  font-size: 14px;
+  padding: 24px;
+  text-align: center;
+}
+
+.metrics-summary {
+  display: flex;
+  gap: 18px;
+  align-items: center;
+  flex-wrap: wrap;
+  background: var(--nd-panel);
+  border: 1px solid var(--nd-border);
+  border-radius: var(--nd-r-lg);
+  padding: 18px;
+  box-shadow: var(--nd-shadow-sm);
+}
+
+.score-card {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  padding: 14px 22px;
+  border-radius: var(--nd-r-md);
+  color: #fff;
+  background: var(--nd-accent-grad);
+}
+
+.score-card svg {
+  align-self: center;
+  margin-right: 4px;
+}
+
+.score-value {
+  font-size: 34px;
+  font-weight: 700;
+  line-height: 1;
+}
+
+.score-unit {
+  font-size: 14px;
+  opacity: 0.85;
+}
+
+.score-card.grade-excellent {
+  background: linear-gradient(100deg, #059669 0%, #10b981 100%);
+}
+.score-card.grade-good {
+  background: linear-gradient(100deg, #2563eb 0%, #3b82f6 100%);
+}
+.score-card.grade-partial {
+  background: linear-gradient(100deg, #d97706 0%, #f59e0b 100%);
+}
+.score-card.grade-poor {
+  background: linear-gradient(100deg, #dc2626 0%, #ef4444 100%);
+}
+
+.summary-facts {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.grade-badge {
+  display: inline-flex;
+  width: fit-content;
+  padding: 4px 12px;
+  border-radius: var(--nd-r-pill);
+  font-size: 13px;
+  font-weight: 700;
+  color: #fff;
+}
+
+.grade-badge.grade-excellent {
+  background: var(--nd-success);
+}
+.grade-badge.grade-good {
+  background: #2563eb;
+}
+.grade-badge.grade-partial {
+  background: var(--nd-warning);
+}
+.grade-badge.grade-poor {
+  background: var(--nd-error);
+}
+
+.pass-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.pass-badge.ok {
+  color: var(--nd-success);
+}
+.pass-badge.ko {
+  color: var(--nd-error);
+}
+
+.summary-meta {
+  font-size: 12px;
+  color: var(--nd-text-muted);
+}
+
+.metrics-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+  gap: 14px;
+}
+
+.metric-card {
+  background: var(--nd-panel);
+  border: 1px solid var(--nd-border);
+  border-left: 3px solid var(--nd-border-strong);
+  border-radius: var(--nd-r-md);
+  padding: 14px 16px;
+  box-shadow: var(--nd-shadow-xs);
+}
+
+.metric-card.pass {
+  border-left-color: var(--nd-success);
+}
+.metric-card.fail {
+  border-left-color: var(--nd-error);
+}
+
+.metric-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+
+.metric-name {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--nd-text);
+}
+
+.metric-flag {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+}
+
+.metric-flag.ok {
+  color: var(--nd-success);
+}
+.metric-flag.ko {
+  color: var(--nd-error);
+}
+
+.metric-bar {
+  height: 7px;
+  border-radius: var(--nd-r-pill);
+  background: var(--nd-bg-hover);
+  overflow: hidden;
+}
+
+.metric-bar-fill {
+  height: 100%;
+  border-radius: var(--nd-r-pill);
+  transition: width var(--nd-t-base) var(--nd-ease);
+}
+
+.metric-bar-fill.ok {
+  background: var(--nd-success);
+}
+.metric-bar-fill.ko {
+  background: var(--nd-error);
+}
+
+.metric-bottom {
+  display: flex;
+  gap: 10px;
+  align-items: baseline;
+  margin-top: 8px;
+}
+
+.metric-score {
+  font-size: 15px;
+  font-weight: 700;
+  color: var(--nd-text);
+  min-width: 42px;
+}
+
+.metric-message {
+  font-size: 12px;
+  color: var(--nd-text-secondary);
+  line-height: 1.4;
+}

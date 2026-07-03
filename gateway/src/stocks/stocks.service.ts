@@ -85,6 +85,7 @@ type MarketDataResult = {
     total_debt: number | null;
     operating_cashflow: number | null;
   };
+  warnings: string[];
   errors: string[];
   slm_summary: {
     provider: string;
@@ -94,6 +95,21 @@ type MarketDataResult = {
     key_points: string[];
     warnings: string[];
   } | null;
+};
+
+type MetricResult = {
+  name: string;
+  score: number;
+  passed: boolean;
+  message: string;
+};
+
+type EvaluationReport = {
+  ticker: string;
+  metrics: MetricResult[];
+  total_score: number;
+  grade: "excellent" | "good" | "partial" | "poor";
+  passed: boolean;
 };
 
 const fallbackAnalysis: Record<string, StockAnalysis> = {
@@ -227,8 +243,40 @@ export class StocksService {
           total_debt: null,
           operating_cashflow: null,
         },
+        warnings: [],
         errors: ["Gateway could not reach the AI backend MarketDataAgent endpoint."],
         slm_summary: null,
+      };
+    }
+  }
+
+  async getAgentEvaluation(ticker: string): Promise<EvaluationReport> {
+    const normalizedTicker = ticker.trim().toUpperCase();
+
+    try {
+      const response = await fetch(
+        `${this.aiBackendUrl}/agents/market-data/${normalizedTicker}/evaluation`,
+      );
+
+      if (!response.ok) {
+        throw new Error(`AI backend returned ${response.status}`);
+      }
+
+      return (await response.json()) as EvaluationReport;
+    } catch {
+      return {
+        ticker: normalizedTicker || "AAPL",
+        metrics: [
+          {
+            name: "agent_availability",
+            score: 0,
+            passed: false,
+            message: "Gateway could not reach the AI backend evaluation endpoint.",
+          },
+        ],
+        total_score: 0,
+        grade: "poor",
+        passed: false,
       };
     }
   }

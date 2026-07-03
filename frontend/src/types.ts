@@ -71,3 +71,20 @@ export type MarketDashboard = {
   positions: Position[];
   simulation: ForwardSimulation;
 };
+
+export type MetricResult = {
+  name: string;
+  score: number;
+  passed: boolean;
+  message: string;
+};
+
+export type EvaluationGrade = "excellent" | "good" | "partial" | "poor";
+
+export type EvaluationReport = {
+  ticker: string;
+  metrics: MetricResult[];
+  total_score: number;
+  grade: EvaluationGrade;
+  passed: boolean;
+};
