@@ -30,8 +30,16 @@ class NebiusClient:
     def summarize_market_data(self, payload: dict[str, Any]) -> dict[str, Any] | None:
         if not self.is_enabled():
             return None
+        return self._complete_json(self._system_prompt(), self._build_prompt(payload))
 
-        prompt = self._build_prompt(payload)
+    def summarize_technical_data(self, payload: dict[str, Any]) -> dict[str, Any] | None:
+        if not self.is_enabled():
+            return None
+        return self._complete_json(
+            self._technical_system_prompt(), self._build_technical_prompt(payload)
+        )
+
+    def _complete_json(self, system_prompt: str, user_prompt: str) -> dict[str, Any] | None:
         response = requests.post(
             f"{self.base_url}/chat/completions",
             headers={
@@ -43,8 +51,8 @@ class NebiusClient:
                 "temperature": 0.1,
                 "response_format": {"type": "json_object"},
                 "messages": [
-                    {"role": "system", "content": self._system_prompt()},
-                    {"role": "user", "content": prompt},
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_prompt},
                 ],
             },
             timeout=45,
@@ -87,6 +95,40 @@ class NebiusClient:
             '  "warnings": ["limite ou erreur importante"]\n'
             "}"
         )
+
+    def _technical_system_prompt(self) -> str:
+        return (
+            "Tu es un SLM de controle qualite pour un agent d'analyse technique boursiere.\n"
+            "Les indicateurs (RSI, moyennes mobiles, volatilite, support/resistance, score) sont deja calcules :\n"
+            "tu ne recalcules rien, tu n'inventes aucun chiffre et tu ne donnes pas de recommandation d'achat/vente.\n"
+            "Ton role : evaluer la coherence des indicateurs entre eux, resumer ce qu'ils indiquent\n"
+            "et signaler les limites (historique court, volume anormal, indicateurs contradictoires).\n"
+            "Reponds uniquement en JSON valide avec exactement ces champs:\n"
+            "{\n"
+            '  "summary": "resume court en francais",\n'
+            '  "data_quality": "excellent | bon | partiel | faible",\n'
+            '  "key_points": ["point 1", "point 2", "point 3"],\n'
+            '  "warnings": ["limite ou incoherence importante"]\n'
+            "}"
+        )
+
+    def _build_technical_prompt(self, payload: dict[str, Any]) -> str:
+        compact_payload = {
+            "ticker": payload.get("ticker"),
+            "status": payload.get("status"),
+            "sources_used": payload.get("sources_used"),
+            "rsi": payload.get("rsi"),
+            "moving_averages": payload.get("moving_averages"),
+            "volatility": payload.get("volatility"),
+            "trend": payload.get("trend"),
+            "support_level": payload.get("support_level"),
+            "resistance_level": payload.get("resistance_level"),
+            "volume_analysis": payload.get("volume_analysis"),
+            "technical_score": payload.get("technical_score"),
+            "signal": payload.get("signal"),
+            "errors": payload.get("errors"),
+        }
+        return f"INDICATEURS TECHNIQUES:\n{json.dumps(compact_payload, ensure_ascii=True)}"
 
     def _build_prompt(self, payload: dict[str, Any]) -> str:
         compact_payload = {

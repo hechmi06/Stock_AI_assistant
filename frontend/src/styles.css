@@ -521,6 +521,44 @@ h1 {
   font-weight: 900;
 }
 
+.market-head .num,
+.market-row .num {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.market-row .last-price {
+  font-weight: 900;
+  font-size: 0.98rem;
+}
+
+.market-row .bid-ask {
+  display: block;
+  color: var(--nd-text-muted);
+  font-size: 0.7rem;
+  font-weight: 500;
+  white-space: nowrap;
+}
+
+.var-badge {
+  display: inline-block;
+  padding: 3px 9px;
+  border-radius: var(--nd-r-pill);
+  font-size: 0.8rem;
+  font-weight: 900;
+  white-space: nowrap;
+}
+
+.var-badge.up {
+  background: rgba(22, 163, 74, 0.12);
+  color: var(--nd-success);
+}
+
+.var-badge.down {
+  background: rgba(220, 38, 38, 0.12);
+  color: var(--nd-error);
+}
+
 .muted {
   color: var(--nd-text-muted);
 }
@@ -801,6 +839,38 @@ h1 {
   display: flex;
   flex-wrap: wrap;
   gap: 8px;
+}
+
+.agent-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.agent-tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  border: 1px solid var(--nd-border-strong);
+  background: var(--nd-bg-subtle);
+  color: var(--nd-text-secondary);
+  padding: 9px 16px;
+  border-radius: var(--nd-r-md);
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all var(--nd-t-fast) var(--nd-ease);
+}
+
+.agent-tab:hover {
+  background: var(--nd-bg-hover);
+  color: var(--nd-text);
+}
+
+.agent-tab.active {
+  background: var(--nd-accent-grad);
+  border-color: transparent;
+  color: #fff;
 }
 
 .ticker-chip {

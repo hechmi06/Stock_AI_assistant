@@ -97,6 +97,35 @@ type MarketDataResult = {
   } | null;
 };
 
+type TechnicalResult = {
+  ticker: string;
+  status: "success" | "partial" | "failed";
+  sources_used: Array<"twelve_data" | "yfinance" | "alpha_vantage" | "financial_modeling_prep">;
+  rsi: number | null;
+  moving_averages: { sma_20: number | null; sma_50: number | null };
+  volatility: number | null;
+  trend: "bullish" | "bearish" | "neutral";
+  support_level: number | null;
+  resistance_level: number | null;
+  volume_analysis: {
+    last_volume: number | null;
+    average_volume: number | null;
+    volume_ratio: number | null;
+    interpretation: string;
+  };
+  technical_score: number | null;
+  signal: "positive" | "negative" | "neutral";
+  errors: string[];
+  slm_summary: {
+    provider: string;
+    model: string;
+    summary: string;
+    data_quality: string;
+    key_points: string[];
+    warnings: string[];
+  } | null;
+};
+
 type MetricResult = {
   name: string;
   score: number;
@@ -250,12 +279,56 @@ export class StocksService {
     }
   }
 
+  async getTechnicalAnalysis(ticker: string): Promise<TechnicalResult> {
+    const normalizedTicker = ticker.trim().toUpperCase();
+
+    try {
+      const response = await fetch(`${this.aiBackendUrl}/agents/technical/${normalizedTicker}`);
+
+      if (!response.ok) {
+        throw new Error(`AI backend returned ${response.status}`);
+      }
+
+      return (await response.json()) as TechnicalResult;
+    } catch {
+      return {
+        ticker: normalizedTicker || "AAPL",
+        status: "failed",
+        sources_used: [],
+        rsi: null,
+        moving_averages: { sma_20: null, sma_50: null },
+        volatility: null,
+        trend: "neutral",
+        support_level: null,
+        resistance_level: null,
+        volume_analysis: {
+          last_volume: null,
+          average_volume: null,
+          volume_ratio: null,
+          interpretation: "volume indisponible",
+        },
+        technical_score: null,
+        signal: "neutral",
+        errors: ["Gateway could not reach the AI backend TechnicalAgent endpoint."],
+        slm_summary: null,
+      };
+    }
+  }
+
   async getAgentEvaluation(ticker: string): Promise<EvaluationReport> {
+    return this.fetchEvaluation(ticker, "market-data");
+  }
+
+  async getTechnicalEvaluation(ticker: string): Promise<EvaluationReport> {
+    return this.fetchEvaluation(ticker, "technical");
+  }
+
+  private async fetchEvaluation(ticker: string, agent: "market-data" | "technical"): Promise<EvaluationReport> {
     const normalizedTicker = ticker.trim().toUpperCase();
 
     try {
       const response = await fetch(
-        `${this.aiBackendUrl}/agents/market-data/${normalizedTicker}/evaluation`,
+        `${this.aiBackendUrl}/agents/${agent}/${normalizedTicker}/evaluation`,
       );
 
       if (!response.ok) {

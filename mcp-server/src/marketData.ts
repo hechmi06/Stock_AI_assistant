@@ -13,6 +13,11 @@ export type MarketRow = {
   ask: number;
   spread: number;
   variation: number;
+  open: number | null;
+  high: number | null;
+  low: number | null;
+  previous_close: number | null;
+  volume: number | null;
 };
 
 export type MarketDashboard = {
@@ -828,7 +833,16 @@ export async function getMarketData(ticker: string, period = "6mo"): Promise<Mar
   let financialRatios: FinancialRatios = {};
   let financialStatementsSummary = emptyStatements();
 
-  const quotePayload = await fetchQuotes([symbol]);
+  // Les 4 sources sont interrogees en parallele : la latence totale devient
+  // celle de la source la plus lente au lieu de la somme des quatre.
+  const [quoteSettled, yfinanceSettled, alphaSettled, fmpSettled] = await Promise.allSettled([
+    fetchQuotes([symbol]),
+    fetchYfinanceData(symbol, period),
+    fetchAlphaVantageFundamentals(symbol),
+    fetchFmpFundamentals(symbol),
+  ]);
+
+  const quotePayload = quoteSettled.status === "fulfilled" ? quoteSettled.value : {};
   price = quoteFromTwelveData(symbol, quotePayload[symbol] as Record<string, unknown> | undefined) ?? null;
 
   if (price) {
@@ -837,8 +851,8 @@ export async function getMarketData(ticker: string, period = "6mo"): Promise<Mar
     errors.push("Twelve Data price unavailable.");
   }
 
-  try {
-    const yfinance = await fetchYfinanceData(symbol, period);
+  if (yfinanceSettled.status === "fulfilled") {
+    const yfinance = yfinanceSettled.value;
     const yfinanceUsed =
       Boolean(yfinance.price) ||
       Boolean(yfinance.historical_prices?.length) ||
@@ -858,12 +872,13 @@ export async function getMarketData(ticker: string, period = "6mo"): Promise<Mar
       sources.add("yfinance");
     }
     errors.push(...(yfinance.errors ?? []));
-  } catch (error) {
-    errors.push(`yfinance unavailable: ${error instanceof Error ? error.message : "unknown error"}`);
+  } else {
+    const reason = yfinanceSettled.reason;
+    errors.push(`yfinance unavailable: ${reason instanceof Error ? reason.message : "unknown error"}`);
   }
 
-  try {
-    const alpha = await fetchAlphaVantageFundamentals(symbol);
+  if (alphaSettled.status === "fulfilled") {
+    const alpha = alphaSettled.value;
     if (alpha.used) {
       sources.add("alpha_vantage");
       companyProfile = mergeProfile(companyProfile, alpha.company_profile);
@@ -871,12 +886,13 @@ export async function getMarketData(ticker: string, period = "6mo"): Promise<Mar
       financialStatementsSummary = mergeStatements(financialStatementsSummary, alpha.financial_statements_summary);
     }
     errors.push(...alpha.errors);
-  } catch (error) {
-    errors.push(`Alpha Vantage unavailable: ${error instanceof Error ? error.message : "unknown error"}`);
+  } else {
+    const reason = alphaSettled.reason;
+    errors.push(`Alpha Vantage unavailable: ${reason instanceof Error ? reason.message : "unknown error"}`);
   }
 
-  try {
-    const fmp = await fetchFmpFundamentals(symbol);
+  if (fmpSettled.status === "fulfilled") {
+    const fmp = fmpSettled.value;
     if (fmp.used) {
       sources.add("financial_modeling_prep");
       companyProfile = mergeProfile(companyProfile, fmp.company_profile);
@@ -886,8 +902,9 @@ export async function getMarketData(ticker: string, period = "6mo"): Promise<Mar
     if (process.env.FMP_API_KEY?.trim()) {
       errors.push(...fmp.errors);
     }
-  } catch (error) {
-    errors.push(`Financial Modeling Prep unavailable: ${error instanceof Error ? error.message : "unknown error"}`);
+  } else {
+    const reason = fmpSettled.reason;
+    errors.push(`Financial Modeling Prep unavailable: ${reason instanceof Error ? reason.message : "unknown error"}`);
   }
 
   if (historicalPrices.length === 0) {
@@ -975,11 +992,16 @@ function rowFromQuote(symbol: string, quote: Record<string, unknown> | undefined
     ask: Number((mid + spread / 2).toFixed(4)),
     spread: Number(spread.toFixed(4)),
     variation: Number(variation.toFixed(2)),
+    open: toNullableNumber(quote.open),
+    high: toNullableNumber(quote.high),
+    low: toNullableNumber(quote.low),
+    previous_close: previous > 0 ? previous : null,
+    volume: toNullableNumber(quote.volume),
   };
 }
 
 export function fallbackMarketRows(): MarketRow[] {
-  return [
+  const base = [
     { symbol: "AAPL", name: "Apple Inc.", bid: 213.31, mid: 213.4, ask: 213.49, spread: 0.18, variation: 1.84 },
     { symbol: "MSFT", name: "Microsoft Corp.", bid: 497.82, mid: 498.05, ask: 498.28, spread: 0.46, variation: 0.72 },
     { symbol: "NVDA", name: "NVIDIA Corp.", bid: 154.56, mid: 154.63, ask: 154.7, spread: 0.14, variation: 3.05 },
@@ -989,6 +1011,15 @@ export function fallbackMarketRows(): MarketRow[] {
     { symbol: "TSLA", name: "Tesla, Inc.", bid: 327.65, mid: 327.8, ask: 327.95, spread: 0.3, variation: -2.12 },
     { symbol: "JPM", name: "JPMorgan Chase", bid: 239.7, mid: 239.82, ask: 239.94, spread: 0.24, variation: 0.38 },
   ];
+
+  return base.map((row) => ({
+    ...row,
+    open: null,
+    high: null,
+    low: null,
+    previous_close: Number((row.mid / (1 + row.variation / 100)).toFixed(4)),
+    volume: null,
+  }));
 }
 
 function buildSimulation(row: MarketRow) {

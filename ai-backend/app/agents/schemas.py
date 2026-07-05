@@ -56,6 +56,39 @@ class SlmSummary(BaseModel):
     warnings: list[str] = Field(default_factory=list)
 
 
+TrendDirection = Literal["bullish", "bearish", "neutral"]
+TechnicalSignal = Literal["positive", "negative", "neutral"]
+
+
+class MovingAverages(BaseModel):
+    sma_20: float | None = None
+    sma_50: float | None = None
+
+
+class VolumeAnalysis(BaseModel):
+    last_volume: int | None = None
+    average_volume: float | None = None
+    volume_ratio: float | None = None
+    interpretation: str = "volume indisponible"
+
+
+class TechnicalResult(BaseModel):
+    ticker: str
+    status: MarketDataStatus
+    sources_used: list[MarketDataSource] = Field(default_factory=list)
+    rsi: float | None = None
+    moving_averages: MovingAverages = Field(default_factory=MovingAverages)
+    volatility: float | None = None
+    trend: TrendDirection = "neutral"
+    support_level: float | None = None
+    resistance_level: float | None = None
+    volume_analysis: VolumeAnalysis = Field(default_factory=VolumeAnalysis)
+    technical_score: int | None = None
+    signal: TechnicalSignal = "neutral"
+    errors: list[str] = Field(default_factory=list)
+    slm_summary: SlmSummary | None = None
+
+
 class MarketDataResult(BaseModel):
     ticker: str
     status: MarketDataStatus

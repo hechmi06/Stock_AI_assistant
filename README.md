@@ -76,6 +76,9 @@ Endpoints principaux :
 ```txt
 GET /api/health
 GET /api/stocks/{ticker}/market-data
+GET /api/stocks/{ticker}/technical
+GET /api/stocks/{ticker}/evaluation
+GET /api/stocks/{ticker}/technical/evaluation
 GET /api/stocks/{ticker}/analyze
 GET /api/stocks/market/dashboard
 ```
@@ -140,6 +143,7 @@ historical_prices
 company_profile
 financial_ratios
 financial_statements_summary
+warnings
 errors
 raw_price
 slm_summary
@@ -239,6 +243,105 @@ slm_summary:
   key_points: [...]
   warnings: [...]
 ```
+
+### 7. Memoire de l'agent (structuree + knowledge graph)
+
+`MarketDataAgent` dispose d'une memoire persistante en SQLite (`data/agent_memory.db`,
+hors Git, chemin surchargeable via `AGENT_MEMORY_DB`).
+
+Deux composants :
+
+- **Memoire structuree** (`app/memory/structured_memory.py`) : tables relationnelles
+  pour les snapshots de collecte, profils entreprise, ratios, etats financiers et
+  historique de prix (upsert par ticker/date).
+- **Knowledge Graph** (`app/memory/knowledge_graph.py`) : faits sujet-predicat-objet
+  relies au ticker (`AAPL in_sector TECHNOLOGY`, `AAPL listed_on NASDAQ`,
+  `AAPL data_from twelve_data`, ...).
+
+Comportement :
+
+- apres chaque collecte non `failed`, l'agent memorise le resultat complet ;
+- si le MCP ne repond pas, l'agent ressert la derniere collecte memorisee
+  (statut `partial` + warning explicite) au lieu d'echouer.
+
+Endpoints d'inspection :
+
+```txt
+http://localhost:8000/agents/market-data/AAPL/memory
+http://localhost:8000/agents/memory/graph
+http://localhost:8000/agents/memory/graph?subject=AAPL
+```
+
+Types de memoire prevus pour les prochains agents :
+
+| Agent | Type de memoire | Role |
+|---|---|---|
+| `MarketDataAgent` | Structuree + Knowledge Graph | Prix, profils, ratios, etats financiers (fait) |
+| `TechnicalAgent` | Temporelle + Knowledge Graph | RSI, moyennes mobiles, tendance, volatilite |
+| `NewsAgent` | Documentaire + Knowledge Graph | News, evenements, sentiment |
+| `RAGAgent` | Vectorielle + Knowledge Graph | Passages des rapports financiers |
+| `RiskAgent` | Knowledge Graph + analytique | Risques croises donnees/news/documents |
+| `SynthesisAgent` | Session + Knowledge Graph | Combinaison des resultats |
+| Orchestrateur | Etat / workflow | Ordre et statut des agents appeles |
+
+### 8. TechnicalAgent (fait)
+
+Deuxieme agent implemente et valide. Il n'appelle aucune API externe :
+il consomme les `historical_prices` deja collectes par `MarketDataAgent`.
+
+Il calcule :
+
+- RSI 14 (methode de Wilder) ;
+- SMA 20 et SMA 50 ;
+- volatilite (ecart type des rendements quotidiens sur 20 seances, en %) ;
+- tendance (`bullish` / `bearish` / `neutral` via prix vs SMA 20 vs SMA 50) ;
+- support et resistance (plus bas / plus haut des 30 dernieres seances) ;
+- analyse de volume (dernier volume vs moyenne 20 seances) ;
+- `technical_score` 0-100 et `signal` (`positive` / `negative` / `neutral`).
+
+Il dispose du meme SLM Nebius (prompt dedie : coherence des indicateurs,
+aucune recommandation d'achat/vente) et de sa memoire :
+
+- **Memoire temporelle** (`app/memory/temporal_memory.py`) : chaque calcul est
+  date et stocke, ce qui construit une serie d'indicateurs dans le temps ;
+- **Knowledge Graph** (partage avec `MarketDataAgent`) : faits techniques
+  `MSFT has_indicator RSI_14`, `MSFT has_trend neutral`,
+  `MSFT has_support_level 349.2`, `RSI_14 calculated_from historical_prices`.
+
+Endpoints :
+
+```txt
+http://localhost:8000/agents/technical/MSFT
+http://localhost:8000/agents/technical/MSFT/memory
+http://localhost:3000/api/stocks/MSFT/technical
+```
+
+### 9. Evaluation qualite des agents + page UI
+
+Un module d'evaluation (`app/agents/evaluation.py`) mesure la qualite des
+deux agents, avec 11 metriques chacun :
+
+- **MarketDataAgent** : disponibilite, validite du statut, couverture des
+  sources, absence de fallback, completude prix / historique / profil /
+  ratios / etats financiers, erreurs maitrisees, resume SLM.
+- **TechnicalAgent** : disponibilite, validite du statut, couverture des
+  sources, RSI, moyennes mobiles (SMA 20/50), volatilite, niveaux
+  support/resistance, analyse des volumes, validite score+signal, erreurs
+  maitrisees, resume SLM.
+
+Chaque metrique renvoie `name`, `score` (0-1), `passed`, `message` ;
+l'agregat donne `total_score` (0-100), `grade` (`excellent` / `good` /
+`partial` / `poor`) et `passed`.
+
+- Harnais CLI : `python ai-backend/eval_agent.py` (rapport console + JSON) ;
+- Endpoints : `GET /agents/market-data/{ticker}/evaluation` et
+  `GET /agents/technical/{ticker}/evaluation` ;
+- UI : onglet **Dashboard** du frontend = page "Metriques des agents",
+  avec un selecteur d'agent (MarketDataAgent / TechnicalAgent) et un
+  selecteur de ticker.
+
+Dernier resultat mesure (MarketDataAgent) : score moyen 94.1/100, grade
+`excellent`, 11/11 PASS.
 
 ## Configuration locale
 
@@ -370,7 +473,7 @@ Objectif :
 
 ### Etape 2 - TechnicalAgent
 
-Statut : prochaine etape recommandee.
+Statut : fait (SLM + memoire temporelle + knowledge graph inclus).
 
 Role :
 
@@ -559,6 +662,101 @@ FAISS
 Qdrant
 ```
 
+## Bilan et recommandations
+
+Etat des lieux honnete du projet a ce stade, avec les ameliorations proposees,
+classees par priorite.
+
+### Ce qui est solide
+
+- **Architecture claire et progressive** : frontend -> gateway -> ai-backend ->
+  mcp-server -> APIs. Chaque agent est isole, testable seul, et les agents ne
+  touchent jamais directement les APIs externes.
+- **Resilience reelle** : 4 sources de donnees croisees, fallback interne,
+  rappel memoire quand le MCP est indisponible, separation warnings/errors.
+- **Qualite mesurable** : le module d'evaluation donne un chiffre objectif
+  (94.1/100 actuellement) au lieu d'une impression.
+- **Memoire bien pensee** : SQLite sans dependance, knowledge graph commun aux
+  agents, series temporelles d'indicateurs qui s'enrichissent a chaque appel.
+- **SLM discipline** : role limite au controle qualite, pas d'invention de
+  chiffres, pas de recommandation. C'est le bon usage d'un LLM en finance.
+
+### Ameliorations prioritaires (performance)
+
+1. **Cache TTL sur la collecte (FAIT)** : le `MarketDataAgent` reutilise la
+   derniere collecte memorisee si elle date de moins de 15 minutes
+   (configurable via `MARKET_DATA_CACHE_TTL_SECONDS`, `0` pour desactiver).
+   Garde de qualite : un snapshot sans prix ou sans historique (collecte
+   faite pendant un rate-limit) n'est jamais resservi. Un avertissement
+   `Cache memoire : ...` est ajoute au resultat pour la transparence.
+   Pour forcer une collecte complete : `GET /agents/market-data/{ticker}?fresh=true`
+   (idem sur `/agents/technical/{ticker}` et `/evaluation`).
+2. **SLM optionnel par appel (FAIT)** : `MarketDataAgent.run(..., with_slm=False)`.
+   Quand `TechnicalAgent` appelle `MarketDataAgent` en interne, le resume SLM
+   market-data est saute : un appel LLM sur deux economise (~5-8 s par analyse
+   technique). Si un cache hit n'a pas de resume SLM et qu'on en demande un,
+   il est complete sans relancer la collecte.
+3. **Sources parallelisees dans le MCP (FAIT)** : Twelve Data, yfinance,
+   Alpha Vantage et FMP sont interroges via `Promise.allSettled` dans
+   `getMarketData`. La latence de collecte devient celle de la source la plus
+   lente au lieu de la somme des quatre.
+4. **Fix Docker yfinance** : `PYTHON_PATH=python3` manque dans l'image
+   mcp-server (bug identifie lors de la revue initiale, non corrige car les
+   tests se font hors Docker).
+5. **Retry avec backoff sur les 429** : yfinance est presque toujours en
+   rate-limit. Un retry differencie (ou une desactivation temporaire de la
+   source apres 2 echecs) reduirait le bruit dans les warnings.
+
+### Sources de donnees supplementaires recommandees
+
+| Source | Gratuit | Apport | Priorite |
+|---|---|---|---|
+| **Finnhub** | Oui (60 req/min) | Quotes temps reel, fondamentaux, news par ticker, sentiment | Haute : prepare le NewsAgent |
+| **SEC EDGAR** | Oui (illimite) | Etats financiers officiels US (10-K, 10-Q), source de verite | Haute : fiabilise les fondamentaux + alimente le RAGAgent |
+| **Tiingo** | Oui (genereux) | Historique EOD long (30+ ans), news | Moyenne : renforce l'historique |
+| **Stooq** | Oui (sans cle) | Historique EOD en CSV, aucun quota | Moyenne : fallback historique gratuit ideal |
+| **FRED (Fed St. Louis)** | Oui | Donnees macro (taux, inflation, chomage) | Moyenne : indispensable pour le futur RiskAgent |
+| **GDELT** | Oui | Evenements mondiaux, tonalite media | Basse : NewsAgent avance |
+| **Polygon.io** | Non (payant) | Donnees intraday/tick de qualite institutionnelle | Basse : seulement si besoin intraday serieux |
+
+Remplacement a considerer : **yfinance est le maillon faible** (rate-limit
+permanent, scraping non officiel). Finnhub + Stooq couvrent ensemble ce que
+yfinance apporte (profil + historique), avec de vraies APIs et des quotas connus.
+
+### Idees d'evolution des fonctionnalites
+
+- **Collecte planifiee** : un scheduler (APScheduler) qui collecte les 8
+  tickers de demo toutes les heures remplirait automatiquement la memoire
+  temporelle et rendrait les series d'indicateurs vraiment exploitables
+  (aujourd'hui la serie ne grandit que lors des appels manuels).
+- **UI : page technique** : afficher RSI, tendance, support/resistance et le
+  resume SLM dans le frontend (la page "Metriques des agents" existe deja,
+  une page "Analyse technique" serait la suite naturelle).
+- **Evaluation du TechnicalAgent** : etendre le module d'evaluation avec des
+  metriques dediees (indicateurs calculables, coherence tendance/score,
+  presence du resume SLM).
+- **Exploiter le knowledge graph en requetes croisees** : "toutes les societes
+  du secteur TECHNOLOGY en tendance bullish" est deja possible avec les faits
+  stockes ; il manque juste l'endpoint de requete combinee.
+- **Tests automatises** : les calculs du TechnicalAgent (RSI, SMA, volatilite)
+  sont deterministes et parfaits pour pytest ; c'est le meilleur endroit pour
+  commencer une suite de tests + CI GitHub Actions.
+- **Securite avant tout deploiement** : le mcp-server ecoute sur 0.0.0.0 sans
+  authentification ; a restreindre (localhost ou token) des que le projet sort
+  de la machine locale. Penser aussi a faire tourner les cles API exposees
+  pendant le developpement.
+- **Observabilite** : remplacer les `except Exception` silencieux par du
+  logging structure (module `logging`), pour diagnostiquer les sources qui
+  echouent sans deviner.
+
+### Remplacements envisages (plus tard, pas urgents)
+
+- `requests` (sync) -> `httpx` async dans l'ai-backend quand l'orchestrateur
+  parallele arrivera ;
+- SQLite -> PostgreSQL quand plusieurs services ecriront en meme temps ;
+- le harnais d'evaluation manuel -> evaluation continue planifiee avec
+  historique des scores (detecter une degradation de source automatiquement).
+
 ## Tickers de demonstration
 
 ```txt
@@ -574,12 +772,12 @@ JPM
 
 ## Decision actuelle
 
-`MarketDataAgent` est valide.
+`MarketDataAgent` et `TechnicalAgent` sont valides (SLM + memoire + evaluation).
 
 La prochaine etape logique est :
 
 ```txt
-Implementer TechnicalAgent
+Implementer NewsAgent
 ```
 
-Il utilisera directement `historical_prices` deja fournis par `MarketDataAgent`.
+Il beneficiera du knowledge graph commun deja alimente par les deux premiers agents.

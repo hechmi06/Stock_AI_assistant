@@ -71,3 +71,14 @@ export async function fetchAgentEvaluation(ticker: string): Promise<EvaluationRe
 
   return await response.json();
 }
+
+export async function fetchTechnicalEvaluation(ticker: string): Promise<EvaluationReport> {
+  const normalizedTicker = ticker.trim().toUpperCase();
+  const response = await fetch(`/api/stocks/${normalizedTicker}/technical/evaluation`);
+
+  if (!response.ok) {
+    throw new Error(`Gateway returned ${response.status}`);
+  }
+
+  return await response.json();
+}

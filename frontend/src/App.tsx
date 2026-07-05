@@ -31,6 +31,24 @@ const numberFormatter = new Intl.NumberFormat("en-US", {
   maximumFractionDigits: 4,
 });
 
+const priceFormatter = new Intl.NumberFormat("en-US", {
+  minimumFractionDigits: 2,
+  maximumFractionDigits: 2,
+});
+
+const volumeFormatter = new Intl.NumberFormat("fr-FR", {
+  notation: "compact",
+  maximumFractionDigits: 1,
+});
+
+function formatPrice(value: number | null | undefined) {
+  return value == null ? "—" : priceFormatter.format(value);
+}
+
+function formatVolume(value: number | null | undefined) {
+  return value == null ? "—" : volumeFormatter.format(value);
+}
+
 const fallbackDashboard: MarketDashboard = {
   source: "Demo locale",
   updated_at: new Date().toISOString(),
@@ -234,12 +252,12 @@ export function App() {
 
               <div className="market-table">
                 <div className="market-head">
-                  <span>PAIRE</span>
-                  <span>BID</span>
-                  <span>MID</span>
-                  <span>ASK</span>
-                  <span>SPREAD</span>
-                  <span>VAR. J-1</span>
+                  <span>TITRE</span>
+                  <span className="num">DERNIER</span>
+                  <span className="num">VAR. J-1</span>
+                  <span className="num">HAUT</span>
+                  <span className="num">BAS</span>
+                  <span className="num">VOLUME</span>
                 </div>
                 {dashboard.rows.map((row) => (
                   <button
@@ -252,14 +270,21 @@ export function App() {
                       <strong>{row.symbol}</strong>
                       <small>{row.name}</small>
                     </span>
-                    <span>{numberFormatter.format(row.bid)}</span>
-                    <span className="mid">{numberFormatter.format(row.mid)}</span>
-                    <span>{numberFormatter.format(row.ask)}</span>
-                    <span className="muted">{numberFormatter.format(row.spread)}</span>
-                    <span className={row.variation >= 0 ? "positive" : "negative"}>
-                      {row.variation >= 0 ? "up" : "down"} {row.variation > 0 ? "+" : ""}
-                      {row.variation.toFixed(2)}%
+                    <span className="num last-price">
+                      {priceFormatter.format(row.mid)}
+                      <small className="bid-ask">
+                        {priceFormatter.format(row.bid)} / {priceFormatter.format(row.ask)}
+                      </small>
                     </span>
+                    <span className="num">
+                      <span className={`var-badge ${row.variation >= 0 ? "up" : "down"}`}>
+                        {row.variation >= 0 ? "▲" : "▼"} {row.variation > 0 ? "+" : ""}
+                        {row.variation.toFixed(2)}%
+                      </span>
+                    </span>
+                    <span className="num">{formatPrice(row.high)}</span>
+                    <span className="num">{formatPrice(row.low)}</span>
+                    <span className="num muted">{formatVolume(row.volume)}</span>
                   </button>
                 ))}
               </div>

@@ -2,6 +2,7 @@ import { Controller, Get, Param } from "@nestjs/common";
 import { ApiOkResponse, ApiOperation, ApiParam, ApiTags } from "@nestjs/swagger";
 import { EvaluationReportDto } from "./dto/evaluation-report.dto";
 import { MarketDataResultDto } from "./dto/market-data-result.dto";
+import { TechnicalResultDto } from "./dto/technical-result.dto";
 import { StocksService } from "./stocks.service";
 
 @ApiTags("stocks")
@@ -31,6 +32,18 @@ export class StocksController {
   }
 
   @ApiOperation({
+    summary: "Analyse technique via TechnicalAgent",
+    description:
+      "RSI, SMA 20/50, volatilite, tendance, support/resistance, volume, score et signal. Calcule depuis les donnees du MarketDataAgent (aucun appel API externe direct).",
+  })
+  @ApiParam({ name: "ticker", example: "MSFT", description: "Symbole boursier a analyser" })
+  @ApiOkResponse({ type: TechnicalResultDto })
+  @Get(":ticker/technical")
+  getTechnicalAnalysis(@Param("ticker") ticker: string) {
+    return this.stocksService.getTechnicalAnalysis(ticker);
+  }
+
+  @ApiOperation({
     summary: "Evaluation qualite du MarketDataAgent",
     description:
       "Calcule les 11 metriques de qualite de collecte (score, grade, passed) pour la page Metriques des agents.",
@@ -40,6 +53,18 @@ export class StocksController {
   @Get(":ticker/evaluation")
   getAgentEvaluation(@Param("ticker") ticker: string) {
     return this.stocksService.getAgentEvaluation(ticker);
+  }
+
+  @ApiOperation({
+    summary: "Evaluation qualite du TechnicalAgent",
+    description:
+      "Calcule les 11 metriques de qualite d'analyse technique (score, grade, passed) pour la page Metriques des agents.",
+  })
+  @ApiParam({ name: "ticker", example: "MSFT", description: "Symbole boursier a evaluer" })
+  @ApiOkResponse({ type: EvaluationReportDto })
+  @Get(":ticker/technical/evaluation")
+  getTechnicalEvaluation(@Param("ticker") ticker: string) {
+    return this.stocksService.getTechnicalEvaluation(ticker);
   }
 
   @ApiOperation({

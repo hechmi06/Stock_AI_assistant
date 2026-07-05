@@ -31,6 +31,11 @@ export type MarketRow = {
   ask: number;
   spread: number;
   variation: number;
+  open?: number | null;
+  high?: number | null;
+  low?: number | null;
+  previous_close?: number | null;
+  volume?: number | null;
 };
 
 export type BriefItem = {

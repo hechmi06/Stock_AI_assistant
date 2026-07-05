@@ -6,8 +6,8 @@ import requests
 from fastapi import FastAPI
 from pydantic import BaseModel, ValidationError
 
-from app.agents import MarketDataAgent, MarketDataResult
-from app.agents.evaluation import EvaluationReport, evaluate_market_data
+from app.agents import MarketDataAgent, MarketDataResult, TechnicalAgent, TechnicalResult
+from app.agents.evaluation import EvaluationReport, evaluate_market_data, evaluate_technical
 
 
 def _load_root_env() -> None:
@@ -27,6 +27,7 @@ _load_root_env()
 
 app = FastAPI(title="Stock AI Assistant Backend", version="0.1.0")
 market_data_agent = MarketDataAgent()
+technical_agent = TechnicalAgent(market_data_agent=market_data_agent)
 
 
 class Metric(BaseModel):
@@ -62,6 +63,11 @@ class MarketRow(BaseModel):
     ask: float
     spread: float
     variation: float
+    open: float | None = None
+    high: float | None = None
+    low: float | None = None
+    previous_close: float | None = None
+    volume: float | None = None
 
 
 class BriefItem(BaseModel):
@@ -346,14 +352,48 @@ def health() -> dict[str, object]:
 
 
 @app.get("/agents/market-data/{ticker}", response_model=MarketDataResult)
-def run_market_data_agent(ticker: str) -> MarketDataResult:
-    return market_data_agent.run(ticker)
+def run_market_data_agent(ticker: str, fresh: bool = False) -> MarketDataResult:
+    """Collecte de donnees marche. `fresh=true` force une collecte complete (ignore le cache)."""
+    return market_data_agent.run(ticker, use_cache=not fresh)
 
 
 @app.get("/agents/market-data/{ticker}/evaluation", response_model=EvaluationReport)
-def evaluate_market_data_agent(ticker: str) -> EvaluationReport:
-    result = market_data_agent.run(ticker)
+def evaluate_market_data_agent(ticker: str, fresh: bool = False) -> EvaluationReport:
+    result = market_data_agent.run(ticker, use_cache=not fresh)
     return evaluate_market_data(result)
+
+
+@app.get("/agents/technical/{ticker}", response_model=TechnicalResult)
+def run_technical_agent(ticker: str, fresh: bool = False) -> TechnicalResult:
+    """Analyse technique calculee depuis les donnees du MarketDataAgent."""
+    return technical_agent.run(ticker, use_cache=not fresh)
+
+
+@app.get("/agents/technical/{ticker}/evaluation", response_model=EvaluationReport)
+def evaluate_technical_agent(ticker: str, fresh: bool = False) -> EvaluationReport:
+    """Evaluation qualite du TechnicalAgent (memes principes que le MarketDataAgent)."""
+    result = technical_agent.run(ticker, use_cache=not fresh)
+    return evaluate_technical(result)
+
+
+@app.get("/agents/technical/{ticker}/memory")
+def get_technical_memory(ticker: str) -> dict[str, object]:
+    """Memoire temporelle (serie d'indicateurs) + faits techniques du knowledge graph."""
+    return technical_agent.memory.summary(ticker.strip().upper())
+
+
+@app.get("/agents/market-data/{ticker}/memory")
+def get_market_data_memory(ticker: str) -> dict[str, object]:
+    """Memoire structuree + faits du knowledge graph pour un ticker."""
+    return market_data_agent.memory.summary(ticker.strip().upper())
+
+
+@app.get("/agents/memory/graph")
+def get_knowledge_graph(subject: str | None = None) -> dict[str, object]:
+    """Faits du knowledge graph (tous, ou filtres par sujet ex. ?subject=AAPL)."""
+    graph = market_data_agent.memory.graph
+    facts = graph.facts_for(subject.strip().upper()) if subject else graph.all_facts()
+    return {"subject": subject, "count": len(facts), "facts": facts}
 
 
 @app.get("/analyze/{ticker}", response_model=StockAnalysis)

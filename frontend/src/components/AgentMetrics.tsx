@@ -1,9 +1,24 @@
-import { Activity, CheckCircle2, GaugeCircle, RefreshCw, XCircle } from "lucide-react";
+import { Activity, Bot, CheckCircle2, GaugeCircle, LineChart, RefreshCw, XCircle } from "lucide-react";
 import { useEffect, useState } from "react";
-import { fetchAgentEvaluation } from "../services/analysisApi";
+import { fetchAgentEvaluation, fetchTechnicalEvaluation } from "../services/analysisApi";
 import type { EvaluationGrade, EvaluationReport } from "../types";
 
 const DEMO_TICKERS = ["AAPL", "MSFT", "NVDA", "GOOGL", "AMZN", "META", "TSLA", "JPM"];
+
+type AgentKind = "market-data" | "technical";
+
+const AGENTS: Array<{ id: AgentKind; label: string; description: string }> = [
+  {
+    id: "market-data",
+    label: "MarketDataAgent",
+    description: "Agent de collecte de données de marché (prix, historique, profil, fondamentaux).",
+  },
+  {
+    id: "technical",
+    label: "TechnicalAgent",
+    description: "Agent d'analyse technique (RSI, SMA, volatilité, tendance, support/résistance, volume).",
+  },
+];
 
 const METRIC_LABELS: Record<string, string> = {
   agent_availability: "Disponibilité de l'agent",
@@ -17,6 +32,12 @@ const METRIC_LABELS: Record<string, string> = {
   financial_statements_completeness: "Complétude des états financiers",
   controlled_errors: "Erreurs maîtrisées",
   slm_summary_availability: "Résumé SLM disponible",
+  rsi_availability: "RSI calculé",
+  moving_averages_completeness: "Moyennes mobiles (SMA 20/50)",
+  volatility_availability: "Volatilité calculée",
+  levels_availability: "Support / résistance",
+  volume_analysis_completeness: "Analyse des volumes",
+  score_and_signal_validity: "Score et signal valides",
 };
 
 const GRADE_LABELS: Record<EvaluationGrade, string> = {
@@ -31,16 +52,18 @@ function metricLabel(name: string): string {
 }
 
 export function AgentMetrics() {
+  const [agent, setAgent] = useState<AgentKind>("market-data");
   const [ticker, setTicker] = useState("AAPL");
   const [report, setReport] = useState<EvaluationReport | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  async function loadEvaluation(symbol: string) {
+  async function loadEvaluation(kind: AgentKind, symbol: string) {
     setLoading(true);
     setError(null);
     try {
-      const data = await fetchAgentEvaluation(symbol);
+      const data =
+        kind === "technical" ? await fetchTechnicalEvaluation(symbol) : await fetchAgentEvaluation(symbol);
       setReport(data);
     } catch {
       setReport(null);
@@ -51,9 +74,10 @@ export function AgentMetrics() {
   }
 
   useEffect(() => {
-    void loadEvaluation(ticker);
-  }, [ticker]);
+    void loadEvaluation(agent, ticker);
+  }, [agent, ticker]);
 
+  const activeAgent = AGENTS.find((entry) => entry.id === agent) ?? AGENTS[0];
   const passedCount = report?.metrics.filter((metric) => metric.passed).length ?? 0;
   const totalCount = report?.metrics.length ?? 0;
 
@@ -65,20 +89,35 @@ export function AgentMetrics() {
           <div>
             <h2>Métriques des agents</h2>
             <p>
-              Page dédiée à l'évaluation qualité des agents IA. Actuellement : <strong>MarketDataAgent</strong> (agent de
-              collecte de données de marché).
+              Évaluation qualité de <strong>{activeAgent.label}</strong> — {activeAgent.description}
             </p>
           </div>
         </div>
         <button
           className="icon-button"
           type="button"
-          onClick={() => void loadEvaluation(ticker)}
+          onClick={() => void loadEvaluation(agent, ticker)}
           aria-label="Rafraîchir l'évaluation"
         >
           <RefreshCw size={17} className={loading ? "spin" : ""} />
         </button>
       </header>
+
+      <div className="agent-tabs" role="tablist" aria-label="Choisir un agent à évaluer">
+        {AGENTS.map((entry) => (
+          <button
+            key={entry.id}
+            type="button"
+            role="tab"
+            aria-selected={entry.id === agent}
+            className={`agent-tab ${entry.id === agent ? "active" : ""}`}
+            onClick={() => setAgent(entry.id)}
+          >
+            {entry.id === "technical" ? <LineChart size={15} /> : <Bot size={15} />}
+            {entry.label}
+          </button>
+        ))}
+      </div>
 
       <div className="metrics-tickers" role="tablist" aria-label="Choisir un ticker à évaluer">
         {DEMO_TICKERS.map((symbol) => (
@@ -110,7 +149,7 @@ export function AgentMetrics() {
                 {report.passed ? "Évaluation validée" : "Évaluation non validée"}
               </div>
               <div className="summary-meta">
-                {passedCount}/{totalCount} métriques réussies · {report.ticker}
+                {passedCount}/{totalCount} métriques réussies · {report.ticker} · {activeAgent.label}
               </div>
             </div>
           </div>

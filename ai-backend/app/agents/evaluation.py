@@ -1,9 +1,9 @@
-"""Evaluation du MarketDataAgent.
+"""Evaluation des agents (MarketDataAgent, TechnicalAgent).
 
-L'agent est un collecteur de donnees (pas un predicteur) : on l'evalue donc sur
-la qualite de la donnee collectee. Chaque metrique renvoie un nom, un score
-entre 0 et 1, un booleen `passed` et un message. On agrege ensuite en un
-`total_score` (0-100), une `grade` et un `passed` global.
+Les agents sont evalues sur la qualite de leur production (pas sur une
+prediction). Chaque metrique renvoie un nom, un score entre 0 et 1, un booleen
+`passed` et un message. On agrege ensuite en un `total_score` (0-100), une
+`grade` et un `passed` global.
 """
 
 from __future__ import annotations
@@ -12,7 +12,7 @@ from typing import Literal
 
 from pydantic import BaseModel, Field
 
-from .schemas import MarketDataResult
+from .schemas import MarketDataResult, TechnicalResult
 
 Grade = Literal["excellent", "good", "partial", "poor"]
 
@@ -240,13 +240,185 @@ def evaluate_market_data(
         _slm_summary_availability(result),
     ]
 
+    return _build_report(result.ticker, metrics)
+
+
+def _build_report(ticker: str, metrics: list[MetricResult]) -> EvaluationReport:
     total_score = round(sum(m.score for m in metrics) / len(metrics) * 100, 1)
     grade = _grade_from_score(total_score)
 
     return EvaluationReport(
-        ticker=result.ticker,
+        ticker=ticker,
         metrics=metrics,
         total_score=total_score,
         grade=grade,
         passed=total_score >= OVERALL_PASS_SCORE,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Evaluation du TechnicalAgent
+# ---------------------------------------------------------------------------
+
+def _tech_agent_availability(result: TechnicalResult) -> MetricResult:
+    ok = result.status != "failed"
+    return MetricResult(
+        name="agent_availability",
+        score=1.0 if ok else 0.0,
+        passed=ok,
+        message=(
+            "Agent operationnel, analyse exploitable."
+            if ok
+            else "Analyse en echec (status=failed)."
+        ),
+    )
+
+
+def _tech_status_validity(result: TechnicalResult) -> MetricResult:
+    has_indicators = (
+        result.rsi is not None
+        or result.moving_averages.sma_20 is not None
+        or result.technical_score is not None
+    )
+    coherent = (result.status == "failed") != has_indicators
+    if result.status == "success":
+        score = 1.0
+    elif result.status == "partial":
+        score = 0.7
+    else:
+        score = 0.0
+    if not coherent:
+        score *= 0.5
+    return MetricResult(
+        name="status_validity",
+        score=_clamp01(score),
+        passed=coherent and result.status != "failed",
+        message=f"Statut '{result.status}' {'coherent' if coherent else 'incoherent'} avec les indicateurs.",
+    )
+
+
+def _tech_rsi_availability(result: TechnicalResult) -> MetricResult:
+    ok = result.rsi is not None and 0.0 <= result.rsi <= 100.0
+    return MetricResult(
+        name="rsi_availability",
+        score=1.0 if ok else 0.0,
+        passed=ok,
+        message=(f"RSI calcule : {result.rsi}." if ok else "RSI manquant ou hors bornes."),
+    )
+
+
+def _tech_moving_averages(result: TechnicalResult) -> MetricResult:
+    present = sum(
+        1 for value in (result.moving_averages.sma_20, result.moving_averages.sma_50) if value is not None
+    )
+    return MetricResult(
+        name="moving_averages_completeness",
+        score=present / 2,
+        passed=present == 2,
+        message=f"{present}/2 moyennes mobiles calculees (SMA 20, SMA 50).",
+    )
+
+
+def _tech_volatility(result: TechnicalResult) -> MetricResult:
+    ok = result.volatility is not None
+    return MetricResult(
+        name="volatility_availability",
+        score=1.0 if ok else 0.0,
+        passed=ok,
+        message=(f"Volatilite calculee : {result.volatility}." if ok else "Volatilite manquante."),
+    )
+
+
+def _tech_levels(result: TechnicalResult) -> MetricResult:
+    present = sum(1 for value in (result.support_level, result.resistance_level) if value is not None)
+    return MetricResult(
+        name="levels_availability",
+        score=present / 2,
+        passed=present == 2,
+        message=f"{present}/2 niveaux calcules (support, resistance).",
+    )
+
+
+def _tech_volume_analysis(result: TechnicalResult) -> MetricResult:
+    volume = result.volume_analysis
+    present = sum(
+        1 for value in (volume.last_volume, volume.average_volume, volume.volume_ratio) if value is not None
+    )
+    return MetricResult(
+        name="volume_analysis_completeness",
+        score=present / 3,
+        passed=present >= 2,
+        message=f"{present}/3 champs volume renseignes ({volume.interpretation}).",
+    )
+
+
+def _tech_score_and_signal(result: TechnicalResult) -> MetricResult:
+    score_ok = result.technical_score is not None and 0 <= result.technical_score <= 100
+    ok = score_ok  # signal et trend ont toujours une valeur valide (Literal avec defaut)
+    message = (
+        f"Score {result.technical_score}/100, signal '{result.signal}', tendance '{result.trend}'."
+        if score_ok
+        else "Score technique manquant ou hors bornes."
+    )
+    return MetricResult(
+        name="score_and_signal_validity",
+        score=1.0 if ok else 0.0,
+        passed=ok,
+        message=message,
+    )
+
+
+def _tech_controlled_errors(result: TechnicalResult) -> MetricResult:
+    count = len(result.errors)
+    score = _clamp01(1.0 - count / ERROR_SCALE)
+    message = "Aucune erreur." if count == 0 else f"{count} erreur(s) remontee(s)."
+    return MetricResult(
+        name="controlled_errors",
+        score=score,
+        passed=count <= ERROR_MAX_PASS,
+        message=message,
+    )
+
+
+def _tech_slm_summary(result: TechnicalResult) -> MetricResult:
+    summary = result.slm_summary
+    ok = summary is not None
+    message = (
+        f"Resume SLM present (qualite: {summary.data_quality})." if ok else "Resume SLM absent."
+    )
+    return MetricResult(
+        name="slm_summary_availability",
+        score=1.0 if ok else 0.0,
+        passed=ok,
+        message=message,
+    )
+
+
+def evaluate_technical(result: TechnicalResult) -> EvaluationReport:
+    """Evalue un resultat de TechnicalAgent et renvoie un rapport complet."""
+    metrics = [
+        _tech_agent_availability(result),
+        _tech_status_validity(result),
+        _source_coverage_from_list(result.sources_used),
+        _tech_rsi_availability(result),
+        _tech_moving_averages(result),
+        _tech_volatility(result),
+        _tech_levels(result),
+        _tech_volume_analysis(result),
+        _tech_score_and_signal(result),
+        _tech_controlled_errors(result),
+        _tech_slm_summary(result),
+    ]
+
+    return _build_report(result.ticker, metrics)
+
+
+def _source_coverage_from_list(sources: list[str]) -> MetricResult:
+    count = len(sources)
+    label = ", ".join(sources) if sources else "aucune"
+    return MetricResult(
+        name="source_coverage",
+        score=_clamp01(count / SOURCE_TARGET),
+        passed=count >= 1,
+        message=f"{count} source(s) de donnees utilisee(s) : {label}.",
     )
