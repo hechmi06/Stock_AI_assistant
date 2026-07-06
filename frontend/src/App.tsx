@@ -570,8 +570,6 @@ export function App() {
                     </div>
                   </article>
 
-                  <NewsFeed ticker={selectedSymbol} />
-
                   {/* Positions panel */}
                   <article className="panel positions-panel">
                     <div className="panel-title">
@@ -627,6 +625,10 @@ export function App() {
                       })}
                     </div>
                   </article>
+                </div>
+
+                <div className="right-stack">
+                  <NewsFeed ticker={selectedSymbol} />
                 </div>
               </div>
             </>

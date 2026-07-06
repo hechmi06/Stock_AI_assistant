@@ -586,7 +586,7 @@ h1 {
 /* ===== LAYOUT ===== */
 .market-layout {
   display: grid;
-  grid-template-columns: 260px minmax(0,1fr);
+  grid-template-columns: 260px minmax(0,1.2fr) 320px;
   gap: 0;
   min-height: calc(100vh - 36px - 72px);
   background: var(--bg-base);
@@ -597,6 +597,14 @@ h1 {
   grid-template-rows: auto 1fr;
   gap: 0;
   min-width: 0;
+}
+
+.right-stack {
+  display: grid;
+  grid-template-rows: auto 1fr;
+  gap: 0;
+  min-width: 0;
+  border-left: 1px solid var(--border-subtle);
 }
 
 /* ===== PANELS ===== */
@@ -1486,7 +1494,7 @@ h1 {
 /* ===== RESPONSIVE ===== */
 @media (max-width: 1280px) {
   .market-layout {
-    grid-template-columns: 220px minmax(0,1fr);
+    grid-template-columns: 220px minmax(0,1fr) 280px;
   }
 }
 
