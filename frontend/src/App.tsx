@@ -19,6 +19,7 @@ import {
 } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { AgentMetrics } from "./components/AgentMetrics";
+import { NewsFeed } from "./components/NewsFeed";
 import { fetchMarketDashboard } from "./services/analysisApi";
 import type { MarketDashboard, MarketRow } from "./types";
 
@@ -289,6 +290,8 @@ export function App() {
                 ))}
               </div>
             </article>
+
+            <NewsFeed ticker={selectedSymbol} />
 
             <article className="panel positions-panel">
               <div className="panel-title">

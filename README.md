@@ -77,8 +77,10 @@ Endpoints principaux :
 GET /api/health
 GET /api/stocks/{ticker}/market-data
 GET /api/stocks/{ticker}/technical
+GET /api/stocks/{ticker}/news
 GET /api/stocks/{ticker}/evaluation
 GET /api/stocks/{ticker}/technical/evaluation
+GET /api/stocks/{ticker}/news/evaluation
 GET /api/stocks/{ticker}/analyze
 GET /api/stocks/market/dashboard
 ```
@@ -277,8 +279,8 @@ Types de memoire prevus pour les prochains agents :
 | Agent | Type de memoire | Role |
 |---|---|---|
 | `MarketDataAgent` | Structuree + Knowledge Graph | Prix, profils, ratios, etats financiers (fait) |
-| `TechnicalAgent` | Temporelle + Knowledge Graph | RSI, moyennes mobiles, tendance, volatilite |
-| `NewsAgent` | Documentaire + Knowledge Graph | News, evenements, sentiment |
+| `TechnicalAgent` | Temporelle + Knowledge Graph | RSI, moyennes mobiles, tendance, volatilite (fait) |
+| `NewsAgent` | Documentaire + Knowledge Graph | News, evenements, sentiment (fait) |
 | `RAGAgent` | Vectorielle + Knowledge Graph | Passages des rapports financiers |
 | `RiskAgent` | Knowledge Graph + analytique | Risques croises donnees/news/documents |
 | `SynthesisAgent` | Session + Knowledge Graph | Combinaison des resultats |
@@ -334,11 +336,12 @@ l'agregat donne `total_score` (0-100), `grade` (`excellent` / `good` /
 `partial` / `poor`) et `passed`.
 
 - Harnais CLI : `python ai-backend/eval_agent.py` (rapport console + JSON) ;
-- Endpoints : `GET /agents/market-data/{ticker}/evaluation` et
-  `GET /agents/technical/{ticker}/evaluation` ;
+- Endpoints : `GET /agents/market-data/{ticker}/evaluation`,
+  `GET /agents/technical/{ticker}/evaluation` et
+  `GET /agents/news/{ticker}/evaluation` ;
 - UI : onglet **Dashboard** du frontend = page "Metriques des agents",
-  avec un selecteur d'agent (MarketDataAgent / TechnicalAgent) et un
-  selecteur de ticker.
+  avec un selecteur d'agent (MarketDataAgent / TechnicalAgent / NewsAgent)
+  et un selecteur de ticker.
 
 Dernier resultat mesure (MarketDataAgent) : score moyen 94.1/100, grade
 `excellent`, 11/11 PASS.
@@ -358,9 +361,10 @@ NEBIUS_API_KEY=your_nebius_api_key_here
 NEBIUS_ENABLED=true
 NEBIUS_BASE_URL=https://api.studio.nebius.com/v1
 NEBIUS_MODEL=Qwen/Qwen3-30B-A3B-Instruct-2507
+NEBIUS_MODEL_NEWS=zai-org/GLM-5.2
 ```
 
-Le SLM s'active automatiquement des que `NEBIUS_API_KEY` est renseignee (et `NEBIUS_ENABLED` different de `false`).
+Le SLM s'active automatiquement des que `NEBIUS_API_KEY` est renseignee (et `NEBIUS_ENABLED` different de `false`). `NEBIUS_MODEL` sert MarketDataAgent et TechnicalAgent ; `NEBIUS_MODEL_NEWS` (defaut `zai-org/GLM-5.2`) sert NewsAgent pour le sentiment et les resumes en francais.
 
 Remarque : selon le compte, la base URL peut etre `https://api.studio.nebius.com/v1` ou `https://api.tokenfactory.nebius.com/v1`. Ajuster `NEBIUS_BASE_URL` si besoin.
 
@@ -498,22 +502,23 @@ resistance
 technical_summary
 ```
 
-### Etape 3 - NewsAgent
+### Etape 3 - NewsAgent (fait)
 
 Role :
 
-- recuperer les actualites recentes ;
-- resumer les titres ;
-- analyser le sentiment ;
-- detecter evenements importants.
+- recuperer les actualites recentes (outil MCP `news/{ticker}` : FMP + Yahoo RSS + Finnhub + Google News RSS (gratuit) + NewsData.io en parallele, deduplication par titre, plafond de 6 articles par source, cache 10 min) ;
+- analyser le sentiment global (label + score entre -1 et 1) et le sentiment de chaque article via le SLM Nebius (`zai-org/GLM-5.2` par defaut, configurable via `NEBIUS_MODEL_NEWS`) ;
+- detecter les evenements importants (resultats, M&A, proces, lancements) ;
+- memoriser : memoire documentaire SQLite (runs + articles dedupliques + historique de sentiment) et faits news dans le Knowledge Graph (`has_news_sentiment`, `affected_by_event`, `news_from`) ;
+- cache TTL agent : 30 min (`NEWS_CACHE_TTL_SECONDS`), contournable avec `?fresh=true`.
 
-Sources possibles :
+Endpoints :
 
-- APIs news financieres ;
-- RSS ;
-- GDELT ;
-- Financial Modeling Prep news ;
-- NewsAPI si disponible.
+- backend : `GET /agents/news/{ticker}`, `GET /agents/news/{ticker}/evaluation`, `GET /agents/news/{ticker}/memory` ;
+- gateway : `GET /api/stocks/{ticker}/news`, `GET /api/stocks/{ticker}/news/evaluation` ;
+- UI : troisieme onglet NewsAgent dans la page Metriques du dashboard.
+
+Note : si la cle FMP n'a pas acces aux news (plan gratuit), l'agent fonctionne sur Yahoo RSS + Finnhub + Google News RSS + NewsData.io (warnings non bloquants). Cles dans le `.env` racine : `FINNHUB_API_KEY`, `NEWSDATA_API_KEY` (alternative Google News, format `pub_...`).
 
 ### Etape 4 - RAGAgent
 
@@ -711,7 +716,7 @@ classees par priorite.
 
 | Source | Gratuit | Apport | Priorite |
 |---|---|---|---|
-| **Finnhub** | Oui (60 req/min) | Quotes temps reel, fondamentaux, news par ticker, sentiment | Haute : prepare le NewsAgent |
+| **Finnhub** | Oui (60 req/min) | Quotes temps reel, fondamentaux, news par ticker, sentiment | Integre : source news du NewsAgent (company-news, 7 derniers jours) |
 | **SEC EDGAR** | Oui (illimite) | Etats financiers officiels US (10-K, 10-Q), source de verite | Haute : fiabilise les fondamentaux + alimente le RAGAgent |
 | **Tiingo** | Oui (genereux) | Historique EOD long (30+ ans), news | Moyenne : renforce l'historique |
 | **Stooq** | Oui (sans cle) | Historique EOD en CSV, aucun quota | Moyenne : fallback historique gratuit ideal |
@@ -772,12 +777,12 @@ JPM
 
 ## Decision actuelle
 
-`MarketDataAgent` et `TechnicalAgent` sont valides (SLM + memoire + evaluation).
+`MarketDataAgent`, `TechnicalAgent` et `NewsAgent` sont valides (SLM + memoire + evaluation).
 
 La prochaine etape logique est :
 
 ```txt
-Implementer NewsAgent
+Implementer RAGAgent (documents financiers)
 ```
 
-Il beneficiera du knowledge graph commun deja alimente par les deux premiers agents.
+Il beneficiera du knowledge graph commun deja alimente par les trois premiers agents.

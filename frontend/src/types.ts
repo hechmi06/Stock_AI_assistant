@@ -77,6 +77,45 @@ export type MarketDashboard = {
   simulation: ForwardSimulation;
 };
 
+export type NewsSentiment = "positive" | "negative" | "neutral" | "mixed";
+
+export type NewsOrigin =
+  | "financial_modeling_prep"
+  | "yahoo_rss"
+  | "finnhub"
+  | "google_news_rss"
+  | "newsdata_io";
+
+export type NewsArticle = {
+  title: string;
+  source: string;
+  published_at: string;
+  url: string;
+  summary: string | null;
+  origin: NewsOrigin;
+  sentiment: NewsSentiment | null;
+};
+
+export type NewsResult = {
+  ticker: string;
+  status: "success" | "partial" | "failed";
+  articles: NewsArticle[];
+  sources_used: NewsOrigin[];
+  sentiment_label: NewsSentiment | null;
+  sentiment_score: number | null;
+  key_events: string[];
+  warnings: string[];
+  errors: string[];
+  slm_summary: {
+    provider: string;
+    model: string;
+    summary: string;
+    data_quality: string;
+    key_points: string[];
+    warnings: string[];
+  } | null;
+};
+
 export type MetricResult = {
   name: string;
   score: number;

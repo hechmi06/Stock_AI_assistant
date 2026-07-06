@@ -2,6 +2,7 @@ import { Controller, Get, Param } from "@nestjs/common";
 import { ApiOkResponse, ApiOperation, ApiParam, ApiTags } from "@nestjs/swagger";
 import { EvaluationReportDto } from "./dto/evaluation-report.dto";
 import { MarketDataResultDto } from "./dto/market-data-result.dto";
+import { NewsResultDto } from "./dto/news-result.dto";
 import { TechnicalResultDto } from "./dto/technical-result.dto";
 import { StocksService } from "./stocks.service";
 
@@ -41,6 +42,30 @@ export class StocksController {
   @Get(":ticker/technical")
   getTechnicalAnalysis(@Param("ticker") ticker: string) {
     return this.stocksService.getTechnicalAnalysis(ticker);
+  }
+
+  @ApiOperation({
+    summary: "Actualites + sentiment via NewsAgent",
+    description:
+      "Agrege les news FMP + Yahoo RSS, deduplique, puis analyse le sentiment global et par article via le SLM Nebius.",
+  })
+  @ApiParam({ name: "ticker", example: "AAPL", description: "Symbole boursier" })
+  @ApiOkResponse({ type: NewsResultDto })
+  @Get(":ticker/news")
+  getNews(@Param("ticker") ticker: string) {
+    return this.stocksService.getNews(ticker);
+  }
+
+  @ApiOperation({
+    summary: "Evaluation qualite du NewsAgent",
+    description:
+      "Calcule les 11 metriques de qualite des actualites (score, grade, passed) pour la page Metriques des agents.",
+  })
+  @ApiParam({ name: "ticker", example: "AAPL", description: "Symbole boursier a evaluer" })
+  @ApiOkResponse({ type: EvaluationReportDto })
+  @Get(":ticker/news/evaluation")
+  getNewsEvaluation(@Param("ticker") ticker: string) {
+    return this.stocksService.getNewsEvaluation(ticker);
   }
 
   @ApiOperation({

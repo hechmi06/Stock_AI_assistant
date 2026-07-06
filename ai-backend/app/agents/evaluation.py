@@ -12,7 +12,9 @@ from typing import Literal
 
 from pydantic import BaseModel, Field
 
-from .schemas import MarketDataResult, TechnicalResult
+from datetime import datetime, timezone
+
+from .schemas import MarketDataResult, NewsResult, TechnicalResult
 
 Grade = Literal["excellent", "good", "partial", "poor"]
 
@@ -422,3 +424,203 @@ def _source_coverage_from_list(sources: list[str]) -> MetricResult:
         passed=count >= 1,
         message=f"{count} source(s) de donnees utilisee(s) : {label}.",
     )
+
+
+# ---------------------------------------------------------------------------
+# Evaluation du NewsAgent
+# ---------------------------------------------------------------------------
+
+NEWS_ARTICLES_TARGET = 10
+NEWS_ARTICLES_MIN_PASS = 3
+NEWS_FRESHNESS_PASS_HOURS = 48.0
+NEWS_FRESHNESS_SCALE_DAYS = 7.0
+
+
+def _news_agent_availability(result: NewsResult) -> MetricResult:
+    ok = result.status != "failed"
+    return MetricResult(
+        name="agent_availability",
+        score=1.0 if ok else 0.0,
+        passed=ok,
+        message=(
+            "Agent operationnel, analyse exploitable."
+            if ok
+            else "Analyse en echec (status=failed)."
+        ),
+    )
+
+
+def _news_status_validity(result: NewsResult) -> MetricResult:
+    has_articles = bool(result.articles)
+    coherent = (result.status == "failed") != has_articles
+    if result.status == "success":
+        score = 1.0
+    elif result.status == "partial":
+        score = 0.7
+    else:
+        score = 0.0
+    if not coherent:
+        score *= 0.5
+    return MetricResult(
+        name="status_validity",
+        score=_clamp01(score),
+        passed=coherent and result.status != "failed",
+        message=f"Statut '{result.status}' {'coherent' if coherent else 'incoherent'} avec les articles.",
+    )
+
+
+def _news_articles_count(result: NewsResult) -> MetricResult:
+    count = len(result.articles)
+    return MetricResult(
+        name="articles_count",
+        score=_clamp01(count / NEWS_ARTICLES_TARGET),
+        passed=count >= NEWS_ARTICLES_MIN_PASS,
+        message=f"{count} article(s) collecte(s) (seuil minimal {NEWS_ARTICLES_MIN_PASS}).",
+    )
+
+
+def _news_freshness(result: NewsResult) -> MetricResult:
+    newest_age_hours: float | None = None
+    now = datetime.now(timezone.utc)
+    for article in result.articles:
+        try:
+            published = datetime.fromisoformat(article.published_at.replace("Z", "+00:00"))
+        except ValueError:
+            continue
+        if published.tzinfo is None:
+            published = published.replace(tzinfo=timezone.utc)
+        age_hours = (now - published).total_seconds() / 3600
+        if newest_age_hours is None or age_hours < newest_age_hours:
+            newest_age_hours = age_hours
+
+    if newest_age_hours is None:
+        return MetricResult(
+            name="articles_freshness",
+            score=0.0,
+            passed=False,
+            message="Aucune date d'article exploitable.",
+        )
+
+    score = _clamp01(1.0 - newest_age_hours / (NEWS_FRESHNESS_SCALE_DAYS * 24))
+    passed = newest_age_hours <= NEWS_FRESHNESS_PASS_HOURS
+    return MetricResult(
+        name="articles_freshness",
+        score=score,
+        passed=passed,
+        message=f"Article le plus recent : il y a {newest_age_hours:.0f} h (seuil {NEWS_FRESHNESS_PASS_HOURS:.0f} h).",
+    )
+
+
+def _news_summaries_coverage(result: NewsResult) -> MetricResult:
+    total = len(result.articles)
+    if total == 0:
+        return MetricResult(
+            name="summaries_coverage",
+            score=0.0,
+            passed=False,
+            message="Aucun article a resumer.",
+        )
+    with_summary = sum(1 for article in result.articles if article.summary)
+    ratio = with_summary / total
+    return MetricResult(
+        name="summaries_coverage",
+        score=_clamp01(ratio),
+        passed=ratio >= 0.5,
+        message=f"{with_summary}/{total} article(s) avec resume/extrait.",
+    )
+
+
+def _news_sentiment_availability(result: NewsResult) -> MetricResult:
+    ok = result.sentiment_label is not None and result.sentiment_score is not None
+    if ok:
+        message = f"Sentiment global : {result.sentiment_label} (score {result.sentiment_score})."
+    else:
+        message = "Sentiment global manquant."
+    return MetricResult(
+        name="sentiment_availability",
+        score=1.0 if ok else 0.0,
+        passed=ok,
+        message=message,
+    )
+
+
+def _news_article_sentiment_coverage(result: NewsResult) -> MetricResult:
+    total = len(result.articles)
+    if total == 0:
+        return MetricResult(
+            name="article_sentiment_coverage",
+            score=0.0,
+            passed=False,
+            message="Aucun article a classer.",
+        )
+    classified = sum(1 for article in result.articles if article.sentiment is not None)
+    ratio = classified / total
+    return MetricResult(
+        name="article_sentiment_coverage",
+        score=_clamp01(ratio),
+        passed=ratio >= 0.5,
+        message=f"{classified}/{total} article(s) classe(s) par sentiment.",
+    )
+
+
+def _news_key_events(result: NewsResult) -> MetricResult:
+    count = len(result.key_events)
+    return MetricResult(
+        name="key_events_detected",
+        score=_clamp01(count / 2),
+        passed=count >= 1,
+        message=(
+            f"{count} evenement(s) important(s) detecte(s)."
+            if count
+            else "Aucun evenement important detecte."
+        ),
+    )
+
+
+def _news_controlled_errors(result: NewsResult) -> MetricResult:
+    count = len(result.errors)
+    warn_count = len(result.warnings)
+    score = _clamp01(1.0 - count / ERROR_SCALE)
+    if count == 0:
+        message = f"Aucune erreur fatale ({warn_count} avertissement(s) non bloquant(s))."
+    else:
+        message = f"{count} erreur(s) fatale(s), {warn_count} avertissement(s)."
+    return MetricResult(
+        name="controlled_errors",
+        score=score,
+        passed=count <= ERROR_MAX_PASS,
+        message=message,
+    )
+
+
+def _news_slm_summary(result: NewsResult) -> MetricResult:
+    summary = result.slm_summary
+    ok = summary is not None
+    message = (
+        f"Resume SLM present (qualite: {summary.data_quality})." if ok else "Resume SLM absent."
+    )
+    return MetricResult(
+        name="slm_summary_availability",
+        score=1.0 if ok else 0.0,
+        passed=ok,
+        message=message,
+    )
+
+
+def evaluate_news(result: NewsResult) -> EvaluationReport:
+    """Evalue un resultat de NewsAgent et renvoie un rapport complet."""
+    metrics = [
+        _news_agent_availability(result),
+        _news_status_validity(result),
+        _source_coverage_from_list(result.sources_used),
+        _news_articles_count(result),
+        _news_freshness(result),
+        _news_summaries_coverage(result),
+        _news_sentiment_availability(result),
+        _news_article_sentiment_coverage(result),
+        _news_key_events(result),
+        _news_controlled_errors(result),
+        _news_slm_summary(result),
+    ]
+
+    return _build_report(result.ticker, metrics)

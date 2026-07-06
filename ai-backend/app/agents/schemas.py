@@ -89,6 +89,39 @@ class TechnicalResult(BaseModel):
     slm_summary: SlmSummary | None = None
 
 
+NewsSentiment = Literal["positive", "negative", "neutral", "mixed"]
+NewsOrigin = Literal[
+    "financial_modeling_prep",
+    "yahoo_rss",
+    "finnhub",
+    "google_news_rss",
+    "newsdata_io",
+]
+
+
+class NewsArticle(BaseModel):
+    title: str
+    source: str
+    published_at: str
+    url: str
+    summary: str | None = None
+    origin: NewsOrigin
+    sentiment: NewsSentiment | None = None
+
+
+class NewsResult(BaseModel):
+    ticker: str
+    status: MarketDataStatus
+    articles: list[NewsArticle] = Field(default_factory=list)
+    sources_used: list[NewsOrigin] = Field(default_factory=list)
+    sentiment_label: NewsSentiment | None = None
+    sentiment_score: float | None = Field(default=None, ge=-1.0, le=1.0)
+    key_events: list[str] = Field(default_factory=list)
+    warnings: list[str] = Field(default_factory=list)
+    errors: list[str] = Field(default_factory=list)
+    slm_summary: SlmSummary | None = None
+
+
 class MarketDataResult(BaseModel):
     ticker: str
     status: MarketDataStatus

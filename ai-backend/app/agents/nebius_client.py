@@ -6,6 +6,18 @@ import requests
 
 DEFAULT_BASE_URL = "https://api.studio.nebius.com/v1"
 DEFAULT_MODEL = "Qwen/Qwen3-30B-A3B-Instruct-2507"
+DEFAULT_NEWS_MODEL = "zai-org/GLM-5.2"
+
+
+def resolve_nebius_model(agent: str | None = None) -> str:
+    """Modele Nebius pour un agent : NEBIUS_MODEL_NEWS, etc., puis NEBIUS_MODEL."""
+    if agent:
+        override = os.getenv(f"NEBIUS_MODEL_{agent.upper()}", "").strip()
+        if override:
+            return override
+        if agent.lower() == "news":
+            return DEFAULT_NEWS_MODEL
+    return os.getenv("NEBIUS_MODEL", DEFAULT_MODEL)
 
 
 class NebiusClient:
@@ -16,10 +28,20 @@ class NebiusClient:
     recommandation d'achat/vente.
     """
 
-    def __init__(self, base_url: str | None = None, model: str | None = None, api_key: str | None = None) -> None:
+    def __init__(
+        self,
+        base_url: str | None = None,
+        model: str | None = None,
+        api_key: str | None = None,
+        agent: str | None = None,
+    ) -> None:
         self.base_url = (base_url or os.getenv("NEBIUS_BASE_URL", DEFAULT_BASE_URL)).rstrip("/")
-        self.model = model or os.getenv("NEBIUS_MODEL", DEFAULT_MODEL)
+        self.model = model or resolve_nebius_model(agent)
         self.api_key = (api_key or os.getenv("NEBIUS_API_KEY", "")).strip()
+
+    @classmethod
+    def for_agent(cls, agent: str) -> "NebiusClient":
+        return cls(agent=agent)
 
     def is_enabled(self) -> bool:
         if not self.api_key:
@@ -39,7 +61,62 @@ class NebiusClient:
             self._technical_system_prompt(), self._build_technical_prompt(payload)
         )
 
+    def analyze_news(self, payload: dict[str, Any]) -> dict[str, Any] | None:
+        """Analyse de sentiment des news : un seul appel batch pour tous les articles.
+
+        Renvoie un dict brut avec summary, data_quality, key_points, warnings,
+        sentiment_label, sentiment_score et article_sentiments (par index).
+        """
+        if not self.is_enabled():
+            return None
+
+        parsed = self._chat_json(self._news_system_prompt(), self._build_news_prompt(payload))
+        if parsed is None:
+            return None
+
+        sentiments = {"positive", "negative", "neutral", "mixed"}
+        label = str(parsed.get("sentiment_label") or "").strip().lower()
+        score = parsed.get("sentiment_score")
+
+        article_sentiments: dict[int, str] = {}
+        raw_articles = parsed.get("article_sentiments")
+        if isinstance(raw_articles, list):
+            for item in raw_articles:
+                if not isinstance(item, dict):
+                    continue
+                index = item.get("index")
+                sentiment = str(item.get("sentiment") or "").strip().lower()
+                if isinstance(index, int) and sentiment in sentiments:
+                    article_sentiments[index] = sentiment
+
+        return {
+            "provider": "nebius",
+            "model": self.model,
+            "summary": str(parsed.get("summary") or ""),
+            "data_quality": str(parsed.get("data_quality") or "unknown"),
+            "key_points": self._string_list(parsed.get("key_events")),
+            "warnings": self._string_list(parsed.get("warnings")),
+            "sentiment_label": label if label in sentiments else None,
+            "sentiment_score": float(score) if isinstance(score, (int, float)) else None,
+            "key_events": self._string_list(parsed.get("key_events")),
+            "article_sentiments": article_sentiments,
+        }
+
     def _complete_json(self, system_prompt: str, user_prompt: str) -> dict[str, Any] | None:
+        parsed = self._chat_json(system_prompt, user_prompt)
+        if parsed is None:
+            return None
+
+        return {
+            "provider": "nebius",
+            "model": self.model,
+            "summary": str(parsed.get("summary") or ""),
+            "data_quality": str(parsed.get("data_quality") or "unknown"),
+            "key_points": self._string_list(parsed.get("key_points")),
+            "warnings": self._string_list(parsed.get("warnings")),
+        }
+
+    def _chat_json(self, system_prompt: str, user_prompt: str) -> dict[str, Any] | None:
         response = requests.post(
             f"{self.base_url}/chat/completions",
             headers={
@@ -71,14 +148,7 @@ class NebiusClient:
         if not isinstance(parsed, dict):
             return None
 
-        return {
-            "provider": "nebius",
-            "model": self.model,
-            "summary": str(parsed.get("summary") or ""),
-            "data_quality": str(parsed.get("data_quality") or "unknown"),
-            "key_points": self._string_list(parsed.get("key_points")),
-            "warnings": self._string_list(parsed.get("warnings")),
-        }
+        return parsed
 
     def _system_prompt(self) -> str:
         return (
@@ -111,6 +181,46 @@ class NebiusClient:
             '  "warnings": ["limite ou incoherence importante"]\n'
             "}"
         )
+
+    def _news_system_prompt(self) -> str:
+        return (
+            "Tu es un SLM d'analyse d'actualites financieres pour un agent de news boursieres.\n"
+            "Tu recois une liste d'articles (titre, source, date, resume) sur une action.\n"
+            "Tu n'inventes aucun fait et tu ne donnes pas de recommandation d'achat/vente.\n"
+            "Ton role : evaluer le sentiment global (positif/negatif/neutre/mixte), donner un score\n"
+            "entre -1.0 (tres negatif) et 1.0 (tres positif), detecter les evenements importants\n"
+            "(resultats, fusions-acquisitions, proces, lancements, changements de direction) et classer\n"
+            "le sentiment de chaque article par son index.\n"
+            "Reponds uniquement en JSON valide avec exactement ces champs:\n"
+            "{\n"
+            '  "summary": "resume court en francais des actualites",\n'
+            '  "data_quality": "excellent | bon | partiel | faible",\n'
+            '  "sentiment_label": "positive | negative | neutral | mixed",\n'
+            '  "sentiment_score": 0.0,\n'
+            '  "key_events": ["evenement important 1", "evenement 2"],\n'
+            '  "article_sentiments": [{"index": 0, "sentiment": "positive"}],\n'
+            '  "warnings": ["limite importante"]\n'
+            "}"
+        )
+
+    def _build_news_prompt(self, payload: dict[str, Any]) -> str:
+        articles = payload.get("articles") or []
+        compact_articles = [
+            {
+                "index": index,
+                "title": article.get("title"),
+                "source": article.get("source"),
+                "published_at": article.get("published_at"),
+                "summary": (article.get("summary") or "")[:300] or None,
+            }
+            for index, article in enumerate(articles)
+        ]
+        compact_payload = {
+            "ticker": payload.get("ticker"),
+            "articles_count": len(compact_articles),
+            "articles": compact_articles,
+        }
+        return f"ACTUALITES:\n{json.dumps(compact_payload, ensure_ascii=True)}"
 
     def _build_technical_prompt(self, payload: dict[str, Any]) -> str:
         compact_payload = {

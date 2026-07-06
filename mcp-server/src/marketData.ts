@@ -281,7 +281,7 @@ async function alphaVantageGet(params: Record<string, string>) {
   }
 }
 
-async function fmpGet(path: string, params: Record<string, string> = {}) {
+export async function fmpGet(path: string, params: Record<string, string> = {}) {
   const apiKey = process.env.FMP_API_KEY?.trim();
 
   if (!apiKey) {

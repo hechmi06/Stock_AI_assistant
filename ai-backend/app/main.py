@@ -6,8 +6,20 @@ import requests
 from fastapi import FastAPI
 from pydantic import BaseModel, ValidationError
 
-from app.agents import MarketDataAgent, MarketDataResult, TechnicalAgent, TechnicalResult
-from app.agents.evaluation import EvaluationReport, evaluate_market_data, evaluate_technical
+from app.agents import (
+    MarketDataAgent,
+    MarketDataResult,
+    NewsAgent,
+    NewsResult,
+    TechnicalAgent,
+    TechnicalResult,
+)
+from app.agents.evaluation import (
+    EvaluationReport,
+    evaluate_market_data,
+    evaluate_news,
+    evaluate_technical,
+)
 
 
 def _load_root_env() -> None:
@@ -28,6 +40,7 @@ _load_root_env()
 app = FastAPI(title="Stock AI Assistant Backend", version="0.1.0")
 market_data_agent = MarketDataAgent()
 technical_agent = TechnicalAgent(market_data_agent=market_data_agent)
+news_agent = NewsAgent()
 
 
 class Metric(BaseModel):
@@ -347,6 +360,7 @@ def health() -> dict[str, object]:
         "slm_enabled": slm_enabled,
         "slm_base_url": os.getenv("NEBIUS_BASE_URL", "https://api.studio.nebius.com/v1"),
         "slm_model": os.getenv("NEBIUS_MODEL", "Qwen/Qwen3-30B-A3B-Instruct-2507"),
+        "slm_model_news": os.getenv("NEBIUS_MODEL_NEWS", "zai-org/GLM-5.2"),
         "timestamp": datetime.now(timezone.utc).isoformat(),
     }
 
@@ -380,6 +394,25 @@ def evaluate_technical_agent(ticker: str, fresh: bool = False) -> EvaluationRepo
 def get_technical_memory(ticker: str) -> dict[str, object]:
     """Memoire temporelle (serie d'indicateurs) + faits techniques du knowledge graph."""
     return technical_agent.memory.summary(ticker.strip().upper())
+
+
+@app.get("/agents/news/{ticker}", response_model=NewsResult)
+def run_news_agent(ticker: str, fresh: bool = False) -> NewsResult:
+    """Actualites + sentiment via le NewsAgent (FMP + Yahoo RSS, analyse SLM)."""
+    return news_agent.run(ticker, use_cache=not fresh)
+
+
+@app.get("/agents/news/{ticker}/evaluation", response_model=EvaluationReport)
+def evaluate_news_agent(ticker: str, fresh: bool = False) -> EvaluationReport:
+    """Evaluation qualite du NewsAgent (memes principes que les autres agents)."""
+    result = news_agent.run(ticker, use_cache=not fresh)
+    return evaluate_news(result)
+
+
+@app.get("/agents/news/{ticker}/memory")
+def get_news_memory(ticker: str) -> dict[str, object]:
+    """Memoire documentaire (articles connus, historique de sentiment) + faits news du graphe."""
+    return news_agent.memory.summary(ticker.strip().upper())
 
 
 @app.get("/agents/market-data/{ticker}/memory")

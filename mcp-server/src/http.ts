@@ -8,6 +8,7 @@ import {
   getMarketData,
   getStockPrice,
 } from "./marketData.js";
+import { getStockNews } from "./news.js";
 
 function sendJson(response: ServerResponse, status: number, payload: unknown) {
   response.writeHead(status, {
@@ -38,6 +39,12 @@ const server = createServer(async (request, response) => {
     const marketDataMatch = url.pathname.match(/^\/market-data\/([^/]+)$/);
     if (request.method === "GET" && marketDataMatch) {
       sendJson(response, 200, await getMarketData(decodeURIComponent(marketDataMatch[1]), url.searchParams.get("period") ?? "6mo"));
+      return;
+    }
+
+    const newsMatch = url.pathname.match(/^\/news\/([^/]+)$/);
+    if (request.method === "GET" && newsMatch) {
+      sendJson(response, 200, await getStockNews(decodeURIComponent(newsMatch[1])));
       return;
     }
 

@@ -10,6 +10,7 @@ import {
   getMarketData,
   getStockPrice,
 } from "./marketData.js";
+import { getStockNews } from "./news.js";
 
 const server = new McpServer({
   name: "stock-ai-assistant-mcp",
@@ -147,6 +148,25 @@ server.tool(
         {
           type: "text",
           text: JSON.stringify(marketData, null, 2),
+        },
+      ],
+    };
+  },
+);
+
+server.tool(
+  "get_stock_news",
+  {
+    ticker: z.string().min(1).describe("Stock ticker, for example AAPL"),
+  },
+  async ({ ticker }) => {
+    const news = await getStockNews(ticker);
+
+    return {
+      content: [
+        {
+          type: "text",
+          text: JSON.stringify(news, null, 2),
         },
       ],
     };

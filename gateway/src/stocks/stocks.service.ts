@@ -126,6 +126,36 @@ type TechnicalResult = {
   } | null;
 };
 
+type NewsOrigin = "financial_modeling_prep" | "yahoo_rss" | "finnhub" | "google_news_rss" | "newsdata_io";
+
+type NewsResult = {
+  ticker: string;
+  status: "success" | "partial" | "failed";
+  articles: Array<{
+    title: string;
+    source: string;
+    published_at: string;
+    url: string;
+    summary: string | null;
+    origin: NewsOrigin;
+    sentiment: "positive" | "negative" | "neutral" | "mixed" | null;
+  }>;
+  sources_used: NewsOrigin[];
+  sentiment_label: "positive" | "negative" | "neutral" | "mixed" | null;
+  sentiment_score: number | null;
+  key_events: string[];
+  warnings: string[];
+  errors: string[];
+  slm_summary: {
+    provider: string;
+    model: string;
+    summary: string;
+    data_quality: string;
+    key_points: string[];
+    warnings: string[];
+  } | null;
+};
+
 type MetricResult = {
   name: string;
   score: number;
@@ -315,6 +345,33 @@ export class StocksService {
     }
   }
 
+  async getNews(ticker: string): Promise<NewsResult> {
+    const normalizedTicker = ticker.trim().toUpperCase();
+
+    try {
+      const response = await fetch(`${this.aiBackendUrl}/agents/news/${normalizedTicker}`);
+
+      if (!response.ok) {
+        throw new Error(`AI backend returned ${response.status}`);
+      }
+
+      return (await response.json()) as NewsResult;
+    } catch {
+      return {
+        ticker: normalizedTicker || "AAPL",
+        status: "failed",
+        articles: [],
+        sources_used: [],
+        sentiment_label: null,
+        sentiment_score: null,
+        key_events: [],
+        warnings: [],
+        errors: ["Gateway could not reach the AI backend NewsAgent endpoint."],
+        slm_summary: null,
+      };
+    }
+  }
+
   async getAgentEvaluation(ticker: string): Promise<EvaluationReport> {
     return this.fetchEvaluation(ticker, "market-data");
   }
@@ -323,7 +380,14 @@ export class StocksService {
     return this.fetchEvaluation(ticker, "technical");
   }
 
-  private async fetchEvaluation(ticker: string, agent: "market-data" | "technical"): Promise<EvaluationReport> {
+  async getNewsEvaluation(ticker: string): Promise<EvaluationReport> {
+    return this.fetchEvaluation(ticker, "news");
+  }
+
+  private async fetchEvaluation(
+    ticker: string,
+    agent: "market-data" | "technical" | "news",
+  ): Promise<EvaluationReport> {
     const normalizedTicker = ticker.trim().toUpperCase();
 
     try {

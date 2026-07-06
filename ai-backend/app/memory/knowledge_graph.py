@@ -11,7 +11,7 @@ import threading
 from datetime import datetime, timezone
 from pathlib import Path
 
-from app.agents.schemas import MarketDataResult, TechnicalResult
+from app.agents.schemas import MarketDataResult, NewsResult, TechnicalResult
 
 from .structured_memory import default_db_path
 
@@ -29,6 +29,8 @@ _FUNCTIONAL_PREDICATES = {
     "has_resistance_level",
     "has_rsi",
     "has_technical_score",
+    "has_news_sentiment",
+    "has_news_sentiment_score",
 }
 
 _SCHEMA = """
@@ -119,6 +121,21 @@ class KnowledgeGraph:
             self.add_fact(ticker, "has_resistance_level", str(result.resistance_level))
         if result.technical_score is not None:
             self.add_fact(ticker, "has_technical_score", str(result.technical_score))
+
+    def ingest_news_result(self, result: NewsResult) -> None:
+        """Faits d'actualite : sentiment global et evenements importants detectes."""
+        ticker = result.ticker
+
+        if result.sentiment_label:
+            self.add_fact(ticker, "has_news_sentiment", result.sentiment_label)
+        if result.sentiment_score is not None:
+            self.add_fact(ticker, "has_news_sentiment_score", str(result.sentiment_score))
+        for event in result.key_events:
+            self.add_fact(ticker, "affected_by_event", event)
+            self.add_fact(event, "is_a", "news_event")
+        for source in result.sources_used:
+            self.add_fact(ticker, "news_from", source)
+            self.add_fact(source, "is_a", "news_source")
 
     def facts_for(self, subject: str) -> list[dict[str, str]]:
         with self._lock:

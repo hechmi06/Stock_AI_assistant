@@ -1,11 +1,11 @@
-import { Activity, Bot, CheckCircle2, GaugeCircle, LineChart, RefreshCw, XCircle } from "lucide-react";
+import { Activity, Bot, CheckCircle2, GaugeCircle, LineChart, Newspaper, RefreshCw, XCircle } from "lucide-react";
 import { useEffect, useState } from "react";
-import { fetchAgentEvaluation, fetchTechnicalEvaluation } from "../services/analysisApi";
+import { fetchAgentEvaluation, fetchNewsEvaluation, fetchTechnicalEvaluation } from "../services/analysisApi";
 import type { EvaluationGrade, EvaluationReport } from "../types";
 
 const DEMO_TICKERS = ["AAPL", "MSFT", "NVDA", "GOOGL", "AMZN", "META", "TSLA", "JPM"];
 
-type AgentKind = "market-data" | "technical";
+type AgentKind = "market-data" | "technical" | "news";
 
 const AGENTS: Array<{ id: AgentKind; label: string; description: string }> = [
   {
@@ -17,6 +17,11 @@ const AGENTS: Array<{ id: AgentKind; label: string; description: string }> = [
     id: "technical",
     label: "TechnicalAgent",
     description: "Agent d'analyse technique (RSI, SMA, volatilité, tendance, support/résistance, volume).",
+  },
+  {
+    id: "news",
+    label: "NewsAgent",
+    description: "Agent d'actualités (FMP + Yahoo RSS) avec analyse de sentiment via SLM.",
   },
 ];
 
@@ -38,6 +43,12 @@ const METRIC_LABELS: Record<string, string> = {
   levels_availability: "Support / résistance",
   volume_analysis_completeness: "Analyse des volumes",
   score_and_signal_validity: "Score et signal valides",
+  articles_count: "Nombre d'articles",
+  articles_freshness: "Fraîcheur des articles",
+  summaries_coverage: "Résumés d'articles",
+  sentiment_availability: "Sentiment global disponible",
+  article_sentiment_coverage: "Sentiment par article",
+  key_events_detected: "Événements importants détectés",
 };
 
 const GRADE_LABELS: Record<EvaluationGrade, string> = {
@@ -63,7 +74,11 @@ export function AgentMetrics() {
     setError(null);
     try {
       const data =
-        kind === "technical" ? await fetchTechnicalEvaluation(symbol) : await fetchAgentEvaluation(symbol);
+        kind === "technical"
+          ? await fetchTechnicalEvaluation(symbol)
+          : kind === "news"
+            ? await fetchNewsEvaluation(symbol)
+            : await fetchAgentEvaluation(symbol);
       setReport(data);
     } catch {
       setReport(null);
@@ -113,7 +128,13 @@ export function AgentMetrics() {
             className={`agent-tab ${entry.id === agent ? "active" : ""}`}
             onClick={() => setAgent(entry.id)}
           >
-            {entry.id === "technical" ? <LineChart size={15} /> : <Bot size={15} />}
+            {entry.id === "technical" ? (
+              <LineChart size={15} />
+            ) : entry.id === "news" ? (
+              <Newspaper size={15} />
+            ) : (
+              <Bot size={15} />
+            )}
             {entry.label}
           </button>
         ))}

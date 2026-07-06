@@ -2,14 +2,16 @@
 
 - AgentMemory (MarketDataAgent) : memoire structuree + knowledge graph.
 - TechnicalAgentMemory (TechnicalAgent) : memoire temporelle + knowledge graph.
+- NewsAgentMemory (NewsAgent) : memoire documentaire + knowledge graph.
 """
 
 from __future__ import annotations
 
 from pathlib import Path
 
-from app.agents.schemas import MarketDataResult, TechnicalResult
+from app.agents.schemas import MarketDataResult, NewsResult, TechnicalResult
 
+from .documentary_memory import DocumentaryMemory
 from .knowledge_graph import KnowledgeGraph
 from .structured_memory import StructuredMemory
 from .temporal_memory import TemporalMemory
@@ -33,6 +35,27 @@ class AgentMemory:
     def summary(self, ticker: str) -> dict[str, object]:
         """Vue complete de la memoire pour un ticker (tables + faits du graphe)."""
         summary = self.structured.summary(ticker)
+        summary["knowledge_graph"] = self.graph.facts_for(ticker)
+        return summary
+
+
+class NewsAgentMemory:
+    def __init__(self, db_path: Path | None = None) -> None:
+        self.documentary = DocumentaryMemory(db_path)
+        self.graph = KnowledgeGraph(db_path)
+
+    def remember(self, result: NewsResult) -> tuple[str, int]:
+        """Memorise le run + les articles, met a jour les faits news du graphe."""
+        collected_at, new_articles = self.documentary.store(result)
+        self.graph.ingest_news_result(result)
+        return collected_at, new_articles
+
+    def recall_latest(self, ticker: str) -> tuple[NewsResult, str] | None:
+        return self.documentary.latest_run(ticker)
+
+    def summary(self, ticker: str) -> dict[str, object]:
+        """Articles connus + historique de sentiment + faits news du graphe."""
+        summary = self.documentary.summary(ticker)
         summary["knowledge_graph"] = self.graph.facts_for(ticker)
         return summary
 
