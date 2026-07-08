@@ -24,10 +24,6 @@ export type MarketDashboard = {
   source: string;
   updated_at: string;
   rows: MarketRow[];
-  total: number;
-  page: number;
-  limit: number;
-  total_pages: number;
   brief: Array<{ tag: string; title: string; text: string }>;
   positions: Array<{
     id: string;
@@ -124,6 +120,7 @@ export type MarketDataPayload = {
 };
 
 const MARKET_SYMBOLS: Record<string, string> = {
+  // ── Magnificent 7 ──
   AAPL: "Apple Inc.",
   MSFT: "Microsoft Corp.",
   NVDA: "NVIDIA Corp.",
@@ -131,34 +128,38 @@ const MARKET_SYMBOLS: Record<string, string> = {
   AMZN: "Amazon.com Inc.",
   META: "Meta Platforms",
   TSLA: "Tesla, Inc.",
+  // ── Tech / Semiconductors ──
+  AVGO: "Broadcom Inc.",
+  AMD: "Advanced Micro Devices",
+  CRM: "Salesforce Inc.",
+  ORCL: "Oracle Corp.",
+  NFLX: "Netflix Inc.",
+  INTC: "Intel Corp.",
+  // ── Finance ──
   JPM: "JPMorgan Chase",
+  V: "Visa Inc.",
+  MA: "Mastercard Inc.",
+  BAC: "Bank of America",
+  GS: "Goldman Sachs",
+  // ── Healthcare ──
+  UNH: "UnitedHealth Group",
+  JNJ: "Johnson & Johnson",
+  LLY: "Eli Lilly & Co.",
+  PFE: "Pfizer Inc.",
+  // ── Consumer / Retail ──
+  WMT: "Walmart Inc.",
+  KO: "Coca-Cola Co.",
+  PEP: "PepsiCo Inc.",
+  DIS: "Walt Disney Co.",
+  // ── Energy / Industrial ──
+  XOM: "Exxon Mobil Corp.",
+  CVX: "Chevron Corp.",
+  BA: "Boeing Co.",
+  CAT: "Caterpillar Inc.",
 };
 
-const FEATURED_US_SYMBOLS = [
-  "AAPL", "MSFT", "NVDA", "GOOGL", "AMZN", "META", "TSLA", "BRK.B", "JPM", "V",
-  "UNH", "XOM", "LLY", "MA", "PG", "HD", "AVGO", "COST", "MRK", "ABBV",
-  "PEP", "KO", "WMT", "BAC", "CRM", "AMD", "NFLX", "DIS", "INTC", "CSCO",
-  "ORCL", "IBM", "QCOM", "TXN", "ADBE", "NKE", "SBUX", "MCD", "GS", "MS",
-  "BA", "CAT", "GE", "F", "GM", "UBER", "ABNB", "COIN", "PLTR", "SOFI",
-];
-const US_SYMBOLS_CACHE_MS = 24 * 60 * 60 * 1000;
-const DEFAULT_PAGE_LIMIT = 25;
-const MAX_PAGE_LIMIT = 100;
-const QUOTE_BATCH_SIZE = 8;
-const QUOTE_BATCH_DELAY_MS = 900;
-const FINNHUB_QUOTE_DELAY_MS = 120;
-const MARKET_DASHBOARD_CACHE_MS = 60_000;
-
-export type UsStockEntry = { symbol: string; name: string };
-
-export type MarketDashboardOptions = {
-  page?: number;
-  limit?: number;
-  search?: string;
-};
-
-let usSymbolsCache: { timestamp: number; entries: UsStockEntry[] } | undefined;
-let marketCache: Record<string, { timestamp: number; dashboard: MarketDashboard }> = {};
+const LIVE_MARKET_SYMBOLS = Object.keys(MARKET_SYMBOLS);
+let marketCache: { timestamp: number; dashboard: MarketDashboard } | undefined;
 let marketDataCache: Record<string, { timestamp: number; payload: MarketDataPayload }> = {};
 let alphaFundamentalsCache: Record<
   string,
@@ -348,88 +349,40 @@ function firstArrayItem(payload: unknown) {
   return Array.isArray(payload) ? (payload[0] as Record<string, unknown> | undefined) : undefined;
 }
 
-function normalizeTwelveQuotes(payload: Record<string, unknown>): Record<string, Record<string, unknown>> {
+async function fetchQuotesBatch(symbols: string[]): Promise<Record<string, unknown>> {
+  const payload = await twelveDataGet("quote", { symbol: symbols.join(",") });
+
+  if (!payload) {
+    return {};
+  }
+
+  // Single symbol → Twelve Data returns the object directly
   if (payload.symbol) {
     return { [String(payload.symbol).toUpperCase()]: payload };
   }
+
   return Object.fromEntries(
     Object.entries(payload).filter(([, value]) => {
       return typeof value === "object" && value != null && (value as { status?: string }).status !== "error";
     }),
-  ) as Record<string, Record<string, unknown>>;
+  );
 }
 
-async function fetchFmpQuotes(symbols: string[]): Promise<Record<string, Record<string, unknown>>> {
-  if (symbols.length === 0) return {};
-  const payload = await fmpGet("quote", { symbol: symbols.join(",") });
-  const items = Array.isArray(payload) ? payload : payload ? [payload] : [];
-  const quotes: Record<string, Record<string, unknown>> = {};
-  for (const item of items) {
-    if (typeof item !== "object" || item == null || typeof item.symbol !== "string") continue;
-    const symbol = item.symbol.toUpperCase();
-    quotes[symbol] = {
-      ...item,
-      close: item.price,
-      previous_close: item.previousClose ?? item.previous_close,
-      percent_change: item.changesPercentage ?? item.changePercentage,
-      high: item.dayHigh ?? item.high,
-      low: item.dayLow ?? item.low,
-      open: item.open,
-      volume: item.volume,
-      name: item.name,
-    };
-  }
-  return quotes;
-}
+const BATCH_SIZE = 8;
 
-async function fetchFinnhubQuote(symbol: string): Promise<Record<string, unknown> | undefined> {
-  const apiKey = (process.env.FINNHUB_API_KEY ?? "").trim();
-  if (!apiKey) return undefined;
-  const url = new URL("https://finnhub.io/api/v1/quote");
-  url.searchParams.set("symbol", symbol);
-  url.searchParams.set("token", apiKey);
-  try {
-    const response = await fetch(url, { signal: AbortSignal.timeout(8000) });
-    if (!response.ok) return undefined;
-    const payload = (await response.json()) as { c?: unknown; pc?: unknown; dp?: unknown; h?: unknown; l?: unknown; o?: unknown };
-    const mid = toNumber(payload.c);
-    if (mid <= 0) return undefined;
-    return {
-      close: mid,
-      previous_close: toNumber(payload.pc),
-      percent_change: toNumber(payload.dp),
-      high: toNullableNumber(payload.h),
-      low: toNullableNumber(payload.l),
-      open: toNullableNumber(payload.o),
-    };
-  } catch {
-    return undefined;
-  }
-}
-
-async function fetchQuotes(symbols: string[]): Promise<Record<string, Record<string, unknown>>> {
-  const normalizedSymbols = symbols.map((s) => s.trim().toUpperCase()).filter(Boolean);
-  if (normalizedSymbols.length === 0) return {};
-
-  const quotes: Record<string, Record<string, unknown>> = {};
-  const twelvePayload = await twelveDataGet("quote", { symbol: normalizedSymbols.join(",") });
-  if (twelvePayload) {
-    Object.assign(quotes, normalizeTwelveQuotes(twelvePayload as Record<string, unknown>));
+async function fetchQuotes(symbols: string[]): Promise<Record<string, unknown>> {
+  if (symbols.length <= BATCH_SIZE) {
+    return fetchQuotesBatch(symbols);
   }
 
-  const missingAfterTwelve = normalizedSymbols.filter((symbol) => !rowFromQuote(symbol, quotes[symbol]));
-  if (missingAfterTwelve.length > 0) {
-    Object.assign(quotes, await fetchFmpQuotes(missingAfterTwelve));
+  // Split into chunks to avoid Twelve Data free-plan limits
+  const chunks: string[][] = [];
+  for (let i = 0; i < symbols.length; i += BATCH_SIZE) {
+    chunks.push(symbols.slice(i, i + BATCH_SIZE));
   }
 
-  const missingAfterFmp = normalizedSymbols.filter((symbol) => !rowFromQuote(symbol, quotes[symbol]));
-  for (const symbol of missingAfterFmp) {
-    const finnhubQuote = await fetchFinnhubQuote(symbol);
-    if (finnhubQuote) quotes[symbol] = finnhubQuote;
-    await sleep(FINNHUB_QUOTE_DELAY_MS);
-  }
-
-  return quotes;
+  const results = await Promise.all(chunks.map((chunk) => fetchQuotesBatch(chunk)));
+  return Object.assign({}, ...results);
 }
 
 async function fetchTimeSeries(symbol: string) {
@@ -803,6 +756,30 @@ function mergeStatements(base: FinancialStatementsSummary, next: FinancialStatem
   };
 }
 
+function fallbackHistoricalPrices(symbol: string, price: number | null | undefined): HistoricalPrice[] {
+  if (!price || price <= 0 || !MARKET_SYMBOLS[symbol]) {
+    return [];
+  }
+
+  const points: HistoricalPrice[] = [];
+  for (let index = 9; index >= 0; index -= 1) {
+    const date = new Date();
+    date.setUTCDate(date.getUTCDate() - index);
+    const drift = (9 - index - 4) * 0.006;
+    const close = Number((price * (1 + drift)).toFixed(4));
+    points.push({
+      date: date.toISOString().slice(0, 10),
+      open: Number((close * 0.996).toFixed(4)),
+      high: Number((close * 1.006).toFixed(4)),
+      low: Number((close * 0.992).toFixed(4)),
+      close,
+      volume: null,
+    });
+  }
+
+  return points;
+}
+
 export async function getStockPrice(ticker: string): Promise<PriceQuote | null> {
   const symbol = ticker.trim().toUpperCase();
   const quotes = await fetchQuotes([symbol]);
@@ -987,16 +964,39 @@ export async function getMarketData(ticker: string, period = "6mo"): Promise<Mar
   }
 
   if (historicalPrices.length === 0 && price?.price) {
-    errors.push("Historical prices unavailable from external providers.");
+    const fallbackHistory = fallbackHistoricalPrices(symbol, price.price);
+    if (fallbackHistory.length > 0) {
+      usedFallback = true;
+      historicalPrices = fallbackHistory;
+      errors.push("Using generated fallback history because external history was unavailable.");
+    }
   }
 
   if (!companyProfile.name && MARKET_SYMBOLS[symbol]) {
+    usedFallback = true;
     companyProfile = {
       ...companyProfile,
       name: MARKET_SYMBOLS[symbol],
       currency: companyProfile.currency ?? price?.currency ?? "USD",
       exchange: companyProfile.exchange ?? price?.exchange ?? null,
     };
+  }
+
+  if (!price) {
+    const fallback = fallbackMarketRows().find((row) => row.symbol === symbol);
+    if (fallback) {
+      usedFallback = true;
+      price = {
+        ticker: symbol,
+        price: fallback.mid,
+        change_percent: fallback.variation,
+        currency: "USD",
+        exchange: null,
+        market_state: null,
+        source: "fallback",
+      };
+      companyProfile = { ...companyProfile, name: companyProfile.name ?? fallback.name };
+    }
   }
 
   const payload = {
@@ -1015,11 +1015,7 @@ export async function getMarketData(ticker: string, period = "6mo"): Promise<Mar
   return payload;
 }
 
-function rowFromQuote(
-  symbol: string,
-  quote: Record<string, unknown> | undefined,
-  displayName?: string,
-): MarketRow | undefined {
+function rowFromQuote(symbol: string, quote: Record<string, unknown> | undefined): MarketRow | undefined {
   const mid = toNumber(quote?.close ?? quote?.price);
 
   if (!quote || mid <= 0) {
@@ -1036,7 +1032,7 @@ function rowFromQuote(
 
   return {
     symbol,
-    name: String(quote.name ?? displayName ?? MARKET_SYMBOLS[symbol] ?? `${symbol} Corp.`),
+    name: String(quote.name ?? MARKET_SYMBOLS[symbol] ?? `${symbol} Corp.`),
     bid: Number((mid - spread / 2).toFixed(4)),
     mid: Number(mid.toFixed(4)),
     ask: Number((mid + spread / 2).toFixed(4)),
@@ -1050,167 +1046,54 @@ function rowFromQuote(
   };
 }
 
-function placeholderRow(entry: UsStockEntry): MarketRow {
-  return {
-    symbol: entry.symbol,
-    name: entry.name,
-    bid: 0,
-    mid: 0,
-    ask: 0,
-    spread: 0,
-    variation: 0,
+export function fallbackMarketRows(): MarketRow[] {
+  const base = [
+    // Magnificent 7
+    { symbol: "AAPL", name: "Apple Inc.", bid: 213.31, mid: 213.4, ask: 213.49, spread: 0.18, variation: 1.84 },
+    { symbol: "MSFT", name: "Microsoft Corp.", bid: 497.82, mid: 498.05, ask: 498.28, spread: 0.46, variation: 0.72 },
+    { symbol: "NVDA", name: "NVIDIA Corp.", bid: 154.56, mid: 154.63, ask: 154.7, spread: 0.14, variation: 3.05 },
+    { symbol: "GOOGL", name: "Alphabet Inc.", bid: 179.16, mid: 179.24, ask: 179.32, spread: 0.16, variation: -0.64 },
+    { symbol: "AMZN", name: "Amazon.com Inc.", bid: 222.11, mid: 222.22, ask: 222.33, spread: 0.22, variation: 1.12 },
+    { symbol: "META", name: "Meta Platforms", bid: 602.8, mid: 603.08, ask: 603.36, spread: 0.56, variation: -1.03 },
+    { symbol: "TSLA", name: "Tesla, Inc.", bid: 327.65, mid: 327.8, ask: 327.95, spread: 0.3, variation: -2.12 },
+    // Tech / Semiconductors
+    { symbol: "AVGO", name: "Broadcom Inc.", bid: 224.5, mid: 224.68, ask: 224.86, spread: 0.36, variation: 1.45 },
+    { symbol: "AMD", name: "Advanced Micro Devices", bid: 164.2, mid: 164.33, ask: 164.46, spread: 0.26, variation: 2.18 },
+    { symbol: "CRM", name: "Salesforce Inc.", bid: 340.1, mid: 340.37, ask: 340.64, spread: 0.54, variation: 0.95 },
+    { symbol: "ORCL", name: "Oracle Corp.", bid: 178.44, mid: 178.58, ask: 178.72, spread: 0.28, variation: 0.62 },
+    { symbol: "NFLX", name: "Netflix Inc.", bid: 1098.5, mid: 1099.38, ask: 1100.26, spread: 1.76, variation: 1.33 },
+    { symbol: "INTC", name: "Intel Corp.", bid: 20.14, mid: 20.18, ask: 20.22, spread: 0.08, variation: -1.85 },
+    // Finance
+    { symbol: "JPM", name: "JPMorgan Chase", bid: 239.7, mid: 239.82, ask: 239.94, spread: 0.24, variation: 0.38 },
+    { symbol: "V", name: "Visa Inc.", bid: 316.8, mid: 317.05, ask: 317.3, spread: 0.5, variation: 0.52 },
+    { symbol: "MA", name: "Mastercard Inc.", bid: 538.2, mid: 538.63, ask: 539.06, spread: 0.86, variation: 0.41 },
+    { symbol: "BAC", name: "Bank of America", bid: 45.82, mid: 45.86, ask: 45.9, spread: 0.08, variation: -0.22 },
+    { symbol: "GS", name: "Goldman Sachs", bid: 636.1, mid: 636.61, ask: 637.12, spread: 1.02, variation: 0.78 },
+    // Healthcare
+    { symbol: "UNH", name: "UnitedHealth Group", bid: 312.5, mid: 312.75, ask: 313.0, spread: 0.5, variation: -3.41 },
+    { symbol: "JNJ", name: "Johnson & Johnson", bid: 155.3, mid: 155.42, ask: 155.54, spread: 0.24, variation: 0.15 },
+    { symbol: "LLY", name: "Eli Lilly & Co.", bid: 952.8, mid: 953.56, ask: 954.32, spread: 1.52, variation: 2.67 },
+    { symbol: "PFE", name: "Pfizer Inc.", bid: 25.64, mid: 25.68, ask: 25.72, spread: 0.08, variation: -0.58 },
+    // Consumer / Retail
+    { symbol: "WMT", name: "Walmart Inc.", bid: 97.2, mid: 97.28, ask: 97.36, spread: 0.16, variation: 0.82 },
+    { symbol: "KO", name: "Coca-Cola Co.", bid: 72.34, mid: 72.4, ask: 72.46, spread: 0.12, variation: 0.28 },
+    { symbol: "PEP", name: "PepsiCo Inc.", bid: 129.1, mid: 129.2, ask: 129.3, spread: 0.2, variation: -0.35 },
+    { symbol: "DIS", name: "Walt Disney Co.", bid: 112.45, mid: 112.54, ask: 112.63, spread: 0.18, variation: 1.05 },
+    // Energy / Industrial
+    { symbol: "XOM", name: "Exxon Mobil Corp.", bid: 104.3, mid: 104.38, ask: 104.46, spread: 0.16, variation: -0.74 },
+    { symbol: "CVX", name: "Chevron Corp.", bid: 151.8, mid: 151.92, ask: 152.04, spread: 0.24, variation: -0.48 },
+    { symbol: "BA", name: "Boeing Co.", bid: 188.6, mid: 188.75, ask: 188.9, spread: 0.3, variation: 1.92 },
+    { symbol: "CAT", name: "Caterpillar Inc.", bid: 352.4, mid: 352.68, ask: 352.96, spread: 0.56, variation: 0.65 },
+  ];
+
+  return base.map((row) => ({
+    ...row,
     open: null,
     high: null,
     low: null,
-    previous_close: null,
+    previous_close: Number((row.mid / (1 + row.variation / 100)).toFixed(4)),
     volume: null,
-  };
-}
-
-function filterUsEntries(entries: UsStockEntry[], search: string): UsStockEntry[] {
-  const query = search.trim().toUpperCase();
-  if (!query) return sortUsEntriesFeaturedFirst(entries);
-  return entries.filter(
-    (entry) => entry.symbol.toUpperCase().includes(query) || entry.name.toUpperCase().includes(query),
-  );
-}
-
-function sortUsEntriesFeaturedFirst(entries: UsStockEntry[]): UsStockEntry[] {
-  const featuredRank = new Map(FEATURED_US_SYMBOLS.map((symbol, index) => [symbol, index]));
-  return [...entries].sort((left, right) => {
-    const leftRank = featuredRank.get(left.symbol);
-    const rightRank = featuredRank.get(right.symbol);
-    if (leftRank !== undefined && rightRank !== undefined) return leftRank - rightRank;
-    if (leftRank !== undefined) return -1;
-    if (rightRank !== undefined) return 1;
-    return left.symbol.localeCompare(right.symbol);
-  });
-}
-
-async function fetchUsStockSymbolsFromFinnhub(): Promise<UsStockEntry[]> {
-  const apiKey = (process.env.FINNHUB_API_KEY ?? "").trim();
-  if (!apiKey) throw new Error("FINNHUB_API_KEY is not configured.");
-  const url = new URL("https://finnhub.io/api/v1/stock/symbol");
-  url.searchParams.set("exchange", "US");
-  url.searchParams.set("token", apiKey);
-  const response = await fetch(url, { signal: AbortSignal.timeout(30_000) });
-  if (!response.ok) throw new Error(`Finnhub stock/symbol returned ${response.status}`);
-  const payload = await response.json();
-  if (!Array.isArray(payload)) throw new Error("Finnhub stock/symbol returned an unexpected payload.");
-  const allowedTypes = new Set(["Common Stock", "ADR"]);
-  return payload
-    .map((item: Record<string, unknown>): UsStockEntry | undefined => {
-      const type = typeof item.type === "string" ? item.type : "";
-      if (!allowedTypes.has(type)) return undefined;
-      const symbol = typeof item.symbol === "string" ? item.symbol.trim().toUpperCase() : "";
-      if (!symbol) return undefined;
-      const name =
-        typeof item.description === "string" && item.description.trim()
-          ? item.description.trim()
-          : MARKET_SYMBOLS[symbol] ?? symbol;
-      return { symbol, name };
-    })
-    .filter((entry): entry is UsStockEntry => Boolean(entry));
-}
-
-async function fetchUsStockSymbolsFromFmp(): Promise<UsStockEntry[]> {
-  const payload = await fmpGet("stock-list");
-  if (!Array.isArray(payload)) throw new Error("FMP stock-list unavailable.");
-  return payload
-    .map((item: Record<string, unknown>): UsStockEntry | undefined => {
-      const symbol = typeof item.symbol === "string" ? item.symbol.trim().toUpperCase() : "";
-      if (!symbol) return undefined;
-      const exchange = typeof item.exchangeShortName === "string" ? item.exchangeShortName.toUpperCase() : "";
-      if (exchange && !["NASDAQ", "NYSE", "AMEX", "NYSE ARCA", "BATS"].includes(exchange)) return undefined;
-      const name = typeof item.name === "string" && item.name.trim() ? item.name.trim() : symbol;
-      return { symbol, name };
-    })
-    .filter((entry): entry is UsStockEntry => Boolean(entry));
-}
-
-export async function fetchUsStockSymbols(): Promise<UsStockEntry[]> {
-  const now = Date.now();
-  if (usSymbolsCache && now - usSymbolsCache.timestamp < US_SYMBOLS_CACHE_MS) {
-    return usSymbolsCache.entries;
-  }
-  let entries: UsStockEntry[] = [];
-  try {
-    entries = await fetchUsStockSymbolsFromFinnhub();
-  } catch {
-    entries = await fetchUsStockSymbolsFromFmp();
-  }
-  usSymbolsCache = { timestamp: now, entries };
-  return entries;
-}
-
-export async function searchUsStocks(
-  search: string,
-  limit: number,
-  offset: number,
-): Promise<{ total: number; offset: number; limit: number; symbols: UsStockEntry[] }> {
-  const all = await fetchUsStockSymbols();
-  const filtered = filterUsEntries(all, search);
-  const safeLimit = Math.min(MAX_PAGE_LIMIT, Math.max(1, limit));
-  const safeOffset = Math.max(0, offset);
-  return {
-    total: filtered.length,
-    offset: safeOffset,
-    limit: safeLimit,
-    symbols: filtered.slice(safeOffset, safeOffset + safeLimit),
-  };
-}
-
-async function fetchQuotesForEntries(entries: UsStockEntry[]): Promise<MarketRow[]> {
-  if (entries.length === 0) return [];
-  const rows: MarketRow[] = [];
-  for (let index = 0; index < entries.length; index += QUOTE_BATCH_SIZE) {
-    const batch = entries.slice(index, index + QUOTE_BATCH_SIZE);
-    const quotes = await fetchQuotes(batch.map((entry) => entry.symbol));
-    rows.push(
-      ...batch.map((entry) => {
-        const row = rowFromQuote(entry.symbol, quotes[entry.symbol.toUpperCase()], entry.name);
-        return row ?? placeholderRow(entry);
-      }),
-    );
-    if (index + QUOTE_BATCH_SIZE < entries.length) await sleep(QUOTE_BATCH_DELAY_MS);
-  }
-  return rows;
-}
-
-function dashboardCacheKey(options: MarketDashboardOptions): string {
-  return `${options.page ?? 1}|${options.limit ?? DEFAULT_PAGE_LIMIT}|${(options.search ?? "").trim().toUpperCase()}`;
-}
-
-function emptySimulation(): MarketDashboard["simulation"] {
-  return {
-    symbol: "",
-    spot: 0,
-    notional: 0,
-    horizon_days: 0,
-    domestic_rate: 0,
-    foreign_rate: 0,
-    forward_rate: 0,
-    swap_points: 0,
-    differential: 0,
-    counter_value: 0,
-  };
-}
-
-function emptyMarketDashboard(source: string, errorMessage: string, options: MarketDashboardOptions = {}): MarketDashboard {
-  const page = Math.max(1, options.page ?? 1);
-  const limit = Math.min(MAX_PAGE_LIMIT, Math.max(1, options.limit ?? DEFAULT_PAGE_LIMIT));
-  return {
-    source,
-    updated_at: new Date().toISOString(),
-    rows: [],
-    total: 0,
-    page,
-    limit,
-    total_pages: 0,
-    brief: [{ tag: "ERREUR", title: "Donnees live indisponibles", text: errorMessage }],
-    positions: [],
-    simulation: emptySimulation(),
-  };
+  }));
 }
 
 function buildSimulation(row: MarketRow) {
@@ -1222,6 +1105,7 @@ function buildSimulation(row: MarketRow) {
   const forwardRate = row.mid * (1 + (domesticRate / 100) * yearFraction) / (1 + (foreignRate / 100) * yearFraction);
   const swapPoints = forwardRate - row.mid;
   const differential = row.mid ? (forwardRate / row.mid - 1) * 100 : 0;
+
   return {
     symbol: row.symbol,
     spot: row.mid,
@@ -1236,117 +1120,68 @@ function buildSimulation(row: MarketRow) {
   };
 }
 
-export async function getMarketDashboard(options: MarketDashboardOptions = {}): Promise<MarketDashboard> {
-  const page = Math.max(1, options.page ?? 1);
-  const limit = Math.min(MAX_PAGE_LIMIT, Math.max(1, options.limit ?? DEFAULT_PAGE_LIMIT));
-  const search = options.search ?? "";
-  const cacheKey = dashboardCacheKey({ page, limit, search });
+export async function getMarketDashboard(): Promise<MarketDashboard> {
   const now = Date.now();
-  const cached = marketCache[cacheKey];
-  if (cached && now - cached.timestamp < MARKET_DASHBOARD_CACHE_MS) return cached.dashboard;
-
-  let rows: MarketRow[] = [];
-  let total = 0;
-  let totalPages = 1;
-  let source = "Finnhub + Twelve Data via MCP";
-
-  try {
-    const universe = await fetchUsStockSymbols();
-    const filtered = filterUsEntries(universe, search);
-    total = filtered.length;
-    totalPages = Math.max(1, Math.ceil(total / limit));
-    const safePage = Math.min(page, totalPages);
-    const offset = (safePage - 1) * limit;
-    rows = await fetchQuotesForEntries(filtered.slice(offset, offset + limit));
-    const pricedCount = rows.filter((row) => row.mid > 0).length;
-    source =
-      pricedCount > 0
-        ? `Finnhub US (${total.toLocaleString("en-US")} titres) + Twelve Data/FMP/Finnhub`
-        : `Finnhub US (${total.toLocaleString("en-US")} titres) · cotations indisponibles (quota API)`;
-  } catch {
-    return emptyMarketDashboard(
-      "MCP",
-      "Impossible de charger l'univers US. Verifiez FINNHUB_API_KEY et la connexion reseau.",
-      { page, limit, search },
-    );
+  if (marketCache && now - marketCache.timestamp < 120_000) {
+    return marketCache.dashboard;
   }
 
-  const pricedRows = rows.filter((row) => row.mid > 0);
-  const leader = pricedRows.reduce((best, row) => (row.variation > best.variation ? row : best), pricedRows[0]) ?? rows[0];
-  const laggard = pricedRows.reduce((worst, row) => (row.variation < worst.variation ? row : worst), pricedRows[0]) ?? rows[0];
+  const quotes = await fetchQuotes(LIVE_MARKET_SYMBOLS);
+  let rows = LIVE_MARKET_SYMBOLS.map((symbol) => rowFromQuote(symbol, quotes[symbol] as Record<string, unknown> | undefined)).filter(
+    (row): row is MarketRow => Boolean(row),
+  );
+  let source = "Twelve Data via MCP";
+
+  if (rows.length === 0) {
+    rows = fallbackMarketRows();
+    source = "Fallback MCP";
+  } else if (rows.length < LIVE_MARKET_SYMBOLS.length) {
+    // Keep live rows, fill missing symbols from fallback
+    const liveSymbols = new Set(rows.map((r) => r.symbol));
+    const fallbackFills = fallbackMarketRows().filter((r) => !liveSymbols.has(r.symbol));
+    rows = [...rows, ...fallbackFills];
+    source = `Twelve Data via MCP (${rows.length - fallbackFills.length} live)`;
+  }
+
+  const leader = rows.reduce((best, row) => (row.variation > best.variation ? row : best), rows[0]);
+  const laggard = rows.reduce((worst, row) => (row.variation < worst.variation ? row : worst), rows[0]);
 
   const dashboard: MarketDashboard = {
     source,
     updated_at: new Date().toISOString(),
     rows,
-    total,
-    page: Math.min(page, totalPages),
-    limit,
-    total_pages: totalPages,
     brief: [
       {
         tag: "MARCHE",
-        title: total > 0 ? `${total.toLocaleString("en-US")} titres US disponibles` : "Univers US indisponible",
-        text:
-          total > 0
-            ? `Page ${Math.min(page, totalPages)}/${totalPages} · ${limit} lignes affichees${search ? ` · filtre « ${search.trim().toUpperCase()} »` : ""}.`
-            : "Impossible de charger la liste Finnhub/FMP.",
-      },
-      {
-        tag: "LEADER",
-        title: leader ? `${leader.symbol} en tete de page` : "Aucune cotation",
-        text:
-          leader && leader.mid > 0
-            ? `${leader.name} : ${leader.variation >= 0 ? "+" : ""}${leader.variation.toFixed(2)}%.`
-            : leader
-              ? `${leader.name} : cotation indisponible.`
-              : "Aucun prix live sur cette page.",
+        title: `${leader.symbol} mene le panier`,
+        text: `${leader.name} progresse de ${leader.variation >= 0 ? "+" : ""}${leader.variation.toFixed(2)}% sur la derniere cotation disponible.`,
       },
       {
         tag: "RISQUE",
-        title: laggard ? `Pression sur ${laggard.symbol}` : "Aucune cotation",
-        text:
-          laggard && laggard.mid > 0
-            ? `${laggard.name} : ${laggard.variation.toFixed(2)}%.`
-            : laggard
-              ? `${laggard.name} : pas de prix live.`
-              : "Les APIs de cotation ne renvoient pas de donnees.",
+        title: `Pression sur ${laggard.symbol}`,
+        text: `${laggard.name} recule de ${laggard.variation.toFixed(2)}%. Surveiller tendance, volume et supports.`,
       },
       {
         tag: "MCP",
-        title: "Donnees live uniquement",
-        text: "Aucune cotation statique de secours. Si les prix manquent, verifiez les cles API ou reessayez.",
+        title: "Outil market data actif",
+        text: `Les cotations passent par le serveur MCP. Source actuelle : ${source}.`,
+      },
+      {
+        tag: "IA",
+        title: "Prochaine couche",
+        text: "Ajouter fondamentaux, news et scoring explicable pour passer de la cotation a la decision.",
       },
     ],
-    positions:
-      pricedRows.length > 0 && leader && leader.mid > 0
-        ? [
-            {
-              id: "D-2087",
-              product: "Forward",
-              symbol: leader.symbol,
-              side: "Achat",
-              notional: "250 000 USD",
-              entry: Number(leader.mid.toFixed(4)),
-              maturity: "23/07/26",
-              pnl: 4800,
-            },
-            {
-              id: "D-2091",
-              product: "Spot",
-              symbol: rows[1]?.symbol ?? leader.symbol,
-              side: "Vente",
-              notional: "100 000 USD",
-              entry: Number(((rows[1]?.mid ?? leader.mid) * 1.01).toFixed(4)),
-              maturity: "25/04/26",
-              pnl: -1250,
-            },
-          ]
-        : [],
-    simulation: pricedRows.length > 0 && leader && leader.mid > 0 ? buildSimulation(leader) : emptySimulation(),
+    positions: [
+      { id: "D-2087", product: "Forward", symbol: rows[0].symbol, side: "Achat", notional: "250 000 USD", entry: Number((rows[0].mid * 0.98).toFixed(4)), maturity: "23/07/26", pnl: 4800 },
+      { id: "D-2091", product: "Spot", symbol: rows[1].symbol, side: "Vente", notional: "100 000 USD", entry: Number((rows[1].mid * 1.01).toFixed(4)), maturity: "25/04/26", pnl: -1250 },
+      { id: "D-2094", product: "Swap", symbol: leader.symbol, side: "Achat", notional: "1 000 000 USD", entry: Number((leader.mid * 0.97).toFixed(4)), maturity: "23/05/26", pnl: 9200 },
+      { id: "D-2098", product: "Option", symbol: laggard.symbol, side: "Vente", notional: "50 000 USD", entry: Number((laggard.mid * 1.02).toFixed(4)), maturity: "30/06/26", pnl: 780 },
+    ],
+    simulation: buildSimulation(rows[0]),
   };
 
-  if (pricedRows.length > 0) marketCache[cacheKey] = { timestamp: now, dashboard };
+  marketCache = { timestamp: now, dashboard };
   return dashboard;
 }
 
