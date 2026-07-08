@@ -1,4 +1,7 @@
 import { createServer, type ServerResponse } from "node:http";
+import { loadRootEnv } from "./env.js";
+
+loadRootEnv();
 import {
   analyzeStock,
   getCompanyProfile,
@@ -7,6 +10,7 @@ import {
   getMarketDashboard,
   getMarketData,
   getStockPrice,
+  searchUsStocks,
 } from "./marketData.js";
 import { getStockNews } from "./news.js";
 
@@ -32,7 +36,34 @@ const server = createServer(async (request, response) => {
     }
 
     if (request.method === "GET" && url.pathname === "/market-dashboard") {
-      sendJson(response, 200, await getMarketDashboard());
+      const page = Number(url.searchParams.get("page") ?? "1");
+      const limit = Number(url.searchParams.get("limit") ?? "50");
+      const search = url.searchParams.get("search") ?? "";
+      sendJson(
+        response,
+        200,
+        await getMarketDashboard({
+          page: Number.isFinite(page) ? page : 1,
+          limit: Number.isFinite(limit) ? limit : 50,
+          search,
+        }),
+      );
+      return;
+    }
+
+    if (request.method === "GET" && url.pathname === "/stocks/us") {
+      const limit = Number(url.searchParams.get("limit") ?? "50");
+      const offset = Number(url.searchParams.get("offset") ?? "0");
+      const search = url.searchParams.get("search") ?? "";
+      sendJson(
+        response,
+        200,
+        await searchUsStocks(
+          search,
+          Number.isFinite(limit) ? limit : 50,
+          Number.isFinite(offset) ? offset : 0,
+        ),
+      );
       return;
     }
 

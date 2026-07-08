@@ -6,17 +6,14 @@ import requests
 
 DEFAULT_BASE_URL = "https://api.studio.nebius.com/v1"
 DEFAULT_MODEL = "Qwen/Qwen3-30B-A3B-Instruct-2507"
-DEFAULT_NEWS_MODEL = "zai-org/GLM-5.2"
 
 
 def resolve_nebius_model(agent: str | None = None) -> str:
-    """Modele Nebius pour un agent : NEBIUS_MODEL_NEWS, etc., puis NEBIUS_MODEL."""
+    """Modele Nebius : NEBIUS_MODEL_{AGENT} optionnel, sinon NEBIUS_MODEL."""
     if agent:
         override = os.getenv(f"NEBIUS_MODEL_{agent.upper()}", "").strip()
         if override:
             return override
-        if agent.lower() == "news":
-            return DEFAULT_NEWS_MODEL
     return os.getenv("NEBIUS_MODEL", DEFAULT_MODEL)
 
 

@@ -1,8 +1,9 @@
-import { Controller, Get, Param } from "@nestjs/common";
+import { Controller, Get, Param, Query } from "@nestjs/common";
 import { ApiOkResponse, ApiOperation, ApiParam, ApiTags } from "@nestjs/swagger";
 import { EvaluationReportDto } from "./dto/evaluation-report.dto";
 import { MarketDataResultDto } from "./dto/market-data-result.dto";
 import { NewsResultDto } from "./dto/news-result.dto";
+import { RiskResultDto } from "./dto/risk-result.dto";
 import { TechnicalResultDto } from "./dto/technical-result.dto";
 import { StocksService } from "./stocks.service";
 
@@ -10,6 +11,40 @@ import { StocksService } from "./stocks.service";
 @Controller("stocks")
 export class StocksController {
   constructor(private readonly stocksService: StocksService) {}
+
+  @ApiOperation({
+    summary: "Donnees du tableau de marche (pagination + recherche)",
+    description: "Liste paginee des actions US avec cotations Twelve Data. Parametres : page, limit (max 100), search.",
+  })
+  @Get("market/dashboard")
+  getMarketDashboard(
+    @Query("page") page?: string,
+    @Query("limit") limit?: string,
+    @Query("search") search?: string,
+  ) {
+    return this.stocksService.getMarketDashboard({
+      page: page ? Number(page) : 1,
+      limit: limit ? Number(limit) : 50,
+      search: search ?? "",
+    });
+  }
+
+  @ApiOperation({
+    summary: "Recherche dans l'univers US",
+    description: "Symboles US (Finnhub/FMP) sans cotation — utile pour l'autocompletion.",
+  })
+  @Get("us")
+  searchUsStocks(
+    @Query("search") search?: string,
+    @Query("limit") limit?: string,
+    @Query("offset") offset?: string,
+  ) {
+    return this.stocksService.searchUsStocks({
+      search: search ?? "",
+      limit: limit ? Number(limit) : 50,
+      offset: offset ? Number(offset) : 0,
+    });
+  }
 
   @ApiOperation({
     summary: "Analyse synthetique d'une action",
@@ -57,6 +92,18 @@ export class StocksController {
   }
 
   @ApiOperation({
+    summary: "Diagnostic de risque via RiskAgent",
+    description:
+      "Combine MarketDataAgent, TechnicalAgent et NewsAgent pour produire un score de risque, un niveau global et des risques justifies par des preuves.",
+  })
+  @ApiParam({ name: "ticker", example: "MSFT", description: "Symbole boursier" })
+  @ApiOkResponse({ type: RiskResultDto })
+  @Get(":ticker/risk")
+  getRisk(@Param("ticker") ticker: string) {
+    return this.stocksService.getRisk(ticker);
+  }
+
+  @ApiOperation({
     summary: "Evaluation qualite du NewsAgent",
     description:
       "Calcule les 11 metriques de qualite des actualites (score, grade, passed) pour la page Metriques des agents.",
@@ -90,14 +137,5 @@ export class StocksController {
   @Get(":ticker/technical/evaluation")
   getTechnicalEvaluation(@Param("ticker") ticker: string) {
     return this.stocksService.getTechnicalEvaluation(ticker);
-  }
-
-  @ApiOperation({
-    summary: "Donnees du tableau de marche",
-    description: "Endpoint utilise par le frontend pour remplir le panier marche.",
-  })
-  @Get("market/dashboard")
-  getMarketDashboard() {
-    return this.stocksService.getMarketDashboard();
   }
 }

@@ -1,5 +1,5 @@
 import { mockStocks } from "../data/mockStocks";
-import type { EvaluationReport, MarketDashboard, NewsResult, StockAnalysis } from "../types";
+import type { EvaluationReport, MarketDashboard, NewsResult, StockAnalysis, UsStockSearchResult } from "../types";
 
 export async function fetchNews(ticker: string): Promise<NewsResult> {
   const normalizedTicker = ticker.trim().toUpperCase();
@@ -28,48 +28,61 @@ export async function fetchStockAnalysis(ticker: string): Promise<StockAnalysis>
   }
 }
 
-const fallbackDashboard: MarketDashboard = {
-  source: "Fallback frontend",
-  updated_at: new Date().toISOString(),
-  rows: [
-    { symbol: "AAPL", name: "Apple Inc.", bid: 213.31, mid: 213.4, ask: 213.49, spread: 0.18, variation: 1.84 },
-    { symbol: "MSFT", name: "Microsoft Corp.", bid: 497.82, mid: 498.05, ask: 498.28, spread: 0.46, variation: 0.72 },
-    { symbol: "NVDA", name: "NVIDIA Corp.", bid: 154.56, mid: 154.63, ask: 154.7, spread: 0.14, variation: 3.05 },
-    { symbol: "TSLA", name: "Tesla, Inc.", bid: 327.65, mid: 327.8, ask: 327.95, spread: 0.3, variation: -2.12 },
-  ],
-  brief: [
-    { tag: "DATA", title: "Mode fallback", text: "Le frontend affiche un panier local en attendant le backend." },
-    { tag: "IA", title: "Analyse a brancher", text: "Les prochaines etapes ajoutent fondamentaux, news et scoring explicable." },
-  ],
-  positions: [
-    { id: "D-2087", product: "Forward", symbol: "AAPL", side: "Achat", notional: "250 000 USD", entry: 209.13, maturity: "23/07/26", pnl: 4800 },
-  ],
+export const emptyDashboard: MarketDashboard = {
+  source: "En attente",
+  updated_at: new Date(0).toISOString(),
+  total: 0,
+  page: 1,
+  limit: 25,
+  total_pages: 0,
+  rows: [],
+  brief: [],
+  positions: [],
   simulation: {
-    symbol: "AAPL",
-    spot: 213.4,
-    notional: 250000,
-    horizon_days: 90,
-    domestic_rate: 4.3,
-    foreign_rate: 3.8,
-    forward_rate: 213.66,
-    swap_points: 0.26,
-    differential: 0.12,
-    counter_value: 53415000,
+    symbol: "",
+    spot: 0,
+    notional: 0,
+    horizon_days: 0,
+    domestic_rate: 0,
+    foreign_rate: 0,
+    forward_rate: 0,
+    swap_points: 0,
+    differential: 0,
+    counter_value: 0,
   },
 };
 
-export async function fetchMarketDashboard(): Promise<MarketDashboard> {
-  try {
-    const response = await fetch("/api/stocks/market/dashboard");
+export async function fetchMarketDashboard(options?: {
+  page?: number;
+  limit?: number;
+  search?: string;
+}): Promise<MarketDashboard> {
+  const params = new URLSearchParams({
+    page: String(options?.page ?? 1),
+    limit: String(options?.limit ?? 25),
+    search: options?.search ?? "",
+  });
 
-    if (!response.ok) {
-      throw new Error(`Gateway returned ${response.status}`);
-    }
+  const response = await fetch(`/api/stocks/market/dashboard?${params.toString()}`);
 
-    return await response.json();
-  } catch {
-    return fallbackDashboard;
+  if (!response.ok) {
+    throw new Error(`Gateway returned ${response.status}`);
   }
+
+  return await response.json();
+}
+
+export async function searchUsStocks(search: string, limit = 20): Promise<UsStockSearchResult> {
+  const params = new URLSearchParams({
+    search: search.trim(),
+    limit: String(limit),
+    offset: "0",
+  });
+  const response = await fetch(`/api/stocks/us?${params.toString()}`);
+  if (!response.ok) {
+    throw new Error(`Gateway returned ${response.status}`);
+  }
+  return await response.json();
 }
 
 export async function fetchAgentEvaluation(ticker: string): Promise<EvaluationReport> {

@@ -20,7 +20,7 @@ import {
 import { useEffect, useMemo, useState } from "react";
 import { AgentMetrics } from "./components/AgentMetrics";
 import { NewsFeed } from "./components/NewsFeed";
-import { fetchMarketDashboard } from "./services/analysisApi";
+import { emptyDashboard, fetchMarketDashboard } from "./services/analysisApi";
 import type { MarketDashboard, MarketRow } from "./types";
 
 const moneyFormatter = new Intl.NumberFormat("fr-FR", {
@@ -43,48 +43,12 @@ const volumeFormatter = new Intl.NumberFormat("fr-FR", {
 });
 
 function formatPrice(value: number | null | undefined) {
-  return value == null ? "—" : priceFormatter.format(value);
+  return value == null || value <= 0 ? "—" : priceFormatter.format(value);
 }
 
 function formatVolume(value: number | null | undefined) {
   return value == null ? "—" : volumeFormatter.format(value);
 }
-
-const fallbackDashboard: MarketDashboard = {
-  source: "Demo locale",
-  updated_at: new Date().toISOString(),
-  rows: [
-    { symbol: "AAPL", name: "Apple Inc.", bid: 213.31, mid: 213.4, ask: 213.49, spread: 0.18, variation: 1.84 },
-    { symbol: "MSFT", name: "Microsoft Corp.", bid: 497.82, mid: 498.05, ask: 498.28, spread: 0.46, variation: 0.72 },
-    { symbol: "NVDA", name: "NVIDIA Corp.", bid: 154.56, mid: 154.63, ask: 154.7, spread: 0.14, variation: 3.05 },
-    { symbol: "TSLA", name: "Tesla, Inc.", bid: 327.65, mid: 327.8, ask: 327.95, spread: 0.3, variation: -2.12 },
-  ],
-  brief: [],
-  positions: [
-    {
-      id: "D-2087",
-      product: "Forward",
-      symbol: "AAPL",
-      side: "Achat",
-      notional: "250 000 USD",
-      entry: 209.13,
-      maturity: "23/07/26",
-      pnl: 4800,
-    },
-  ],
-  simulation: {
-    symbol: "AAPL",
-    spot: 0,
-    notional: 250000,
-    horizon_days: 90,
-    domestic_rate: 4.3,
-    foreign_rate: 3.8,
-    forward_rate: 0,
-    swap_points: 0,
-    differential: 0,
-    counter_value: 0,
-  },
-};
 
 function formatDateTime(value: string) {
   return new Intl.DateTimeFormat("fr-FR", {
@@ -111,22 +75,35 @@ function bestRow(rows: MarketRow[]) {
 }
 
 export function App() {
-  const [dashboard, setDashboard] = useState<MarketDashboard>(fallbackDashboard);
+  const [dashboard, setDashboard] = useState<MarketDashboard>(emptyDashboard);
   const [selectedSymbol, setSelectedSymbol] = useState("AAPL");
   const [loading, setLoading] = useState(false);
   const [view, setView] = useState<"trading" | "dashboard">("trading");
+  const [marketPage, setMarketPage] = useState(1);
+  const [marketSearch, setMarketSearch] = useState("");
+  const [searchInput, setSearchInput] = useState("");
+  const [loadError, setLoadError] = useState<string | null>(null);
 
-  async function loadDashboard() {
+  async function loadDashboard(page = marketPage, search = marketSearch) {
     setLoading(true);
-    const nextDashboard = await fetchMarketDashboard();
-    setDashboard(nextDashboard);
-    setSelectedSymbol(nextDashboard.rows[0]?.symbol ?? "AAPL");
-    setLoading(false);
+    setLoadError(null);
+    try {
+      const nextDashboard = await fetchMarketDashboard({ page, limit: 25, search });
+      setDashboard(nextDashboard);
+      if (!nextDashboard.rows.some((row) => row.symbol === selectedSymbol) && nextDashboard.rows[0]) {
+        setSelectedSymbol(nextDashboard.rows[0].symbol);
+      }
+    } catch {
+      setLoadError("Impossible de charger les cotations live. Verifiez MCP, backend et gateway.");
+      setDashboard(emptyDashboard);
+    } finally {
+      setLoading(false);
+    }
   }
 
   useEffect(() => {
-    void loadDashboard();
-  }, []);
+    void loadDashboard(marketPage, marketSearch);
+  }, [marketPage, marketSearch]);
 
   const selectedRow = useMemo(
     () => dashboard.rows.find((row) => row.symbol === selectedSymbol) ?? dashboard.rows[0],
@@ -244,12 +221,63 @@ export function App() {
                 <LineChart size={19} />
                 <strong>Panier Marche · Actions US</strong>
                 <span className="panel-meta">
+                  {dashboard.total.toLocaleString("fr-FR")} titres · page {dashboard.page}/{dashboard.total_pages} ·{" "}
                   {dashboard.source} · maj {formatShortTime(dashboard.updated_at)}
                 </span>
-                <button className="icon-button" type="button" onClick={() => void loadDashboard()} aria-label="Rafraîchir">
+                <button
+                  className="icon-button"
+                  type="button"
+                  onClick={() => void loadDashboard(marketPage, marketSearch)}
+                  aria-label="Rafraîchir"
+                >
                   <RefreshCw size={17} className={loading ? "spin" : ""} />
                 </button>
               </div>
+
+              <div className="market-toolbar">
+                <input
+                  className="market-search"
+                  type="search"
+                  placeholder="Rechercher un symbole ou une société (ex. AAPL, JPMorgan…)"
+                  value={searchInput}
+                  onChange={(event) => setSearchInput(event.target.value)}
+                  onKeyDown={(event) => {
+                    if (event.key === "Enter") {
+                      setMarketPage(1);
+                      setMarketSearch(searchInput.trim());
+                    }
+                  }}
+                />
+                <button
+                  type="button"
+                  className="market-search-btn"
+                  onClick={() => {
+                    setMarketPage(1);
+                    setMarketSearch(searchInput.trim());
+                  }}
+                >
+                  Rechercher
+                </button>
+                {marketSearch ? (
+                  <button
+                    type="button"
+                    className="market-search-clear"
+                    onClick={() => {
+                      setSearchInput("");
+                      setMarketSearch("");
+                      setMarketPage(1);
+                    }}
+                  >
+                    Effacer
+                  </button>
+                ) : null}
+              </div>
+
+              {loadError ? (
+                <div className="market-error" role="alert">
+                  {loadError}
+                </div>
+              ) : null}
 
               <div className="market-table">
                 <div className="market-head">
@@ -272,22 +300,48 @@ export function App() {
                       <small>{row.name}</small>
                     </span>
                     <span className="num last-price">
-                      {priceFormatter.format(row.mid)}
-                      <small className="bid-ask">
-                        {priceFormatter.format(row.bid)} / {priceFormatter.format(row.ask)}
-                      </small>
+                      {formatPrice(row.mid)}
+                      {row.mid > 0 ? (
+                        <small className="bid-ask">
+                          {formatPrice(row.bid)} / {formatPrice(row.ask)}
+                        </small>
+                      ) : null}
                     </span>
                     <span className="num">
-                      <span className={`var-badge ${row.variation >= 0 ? "up" : "down"}`}>
-                        {row.variation >= 0 ? "▲" : "▼"} {row.variation > 0 ? "+" : ""}
-                        {row.variation.toFixed(2)}%
-                      </span>
+                      {row.mid > 0 ? (
+                        <span className={`var-badge ${row.variation >= 0 ? "up" : "down"}`}>
+                          {row.variation >= 0 ? "▲" : "▼"} {row.variation > 0 ? "+" : ""}
+                          {row.variation.toFixed(2)}%
+                        </span>
+                      ) : (
+                        <span className="muted">—</span>
+                      )}
                     </span>
                     <span className="num">{formatPrice(row.high)}</span>
                     <span className="num">{formatPrice(row.low)}</span>
                     <span className="num muted">{formatVolume(row.volume)}</span>
                   </button>
                 ))}
+              </div>
+
+              <div className="market-pagination">
+                <button
+                  type="button"
+                  disabled={dashboard.page <= 1 || loading}
+                  onClick={() => setMarketPage((page) => Math.max(1, page - 1))}
+                >
+                  ← Précédent
+                </button>
+                <span>
+                  Page {dashboard.page} / {dashboard.total_pages}
+                </span>
+                <button
+                  type="button"
+                  disabled={dashboard.page >= dashboard.total_pages || loading}
+                  onClick={() => setMarketPage((page) => page + 1)}
+                >
+                  Suivant →
+                </button>
               </div>
             </article>
 

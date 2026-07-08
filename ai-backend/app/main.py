@@ -3,7 +3,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 import requests
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, ValidationError
 
 from app.agents import (
@@ -11,6 +11,8 @@ from app.agents import (
     MarketDataResult,
     NewsAgent,
     NewsResult,
+    RiskAgent,
+    RiskResult,
     TechnicalAgent,
     TechnicalResult,
 )
@@ -41,6 +43,11 @@ app = FastAPI(title="Stock AI Assistant Backend", version="0.1.0")
 market_data_agent = MarketDataAgent()
 technical_agent = TechnicalAgent(market_data_agent=market_data_agent)
 news_agent = NewsAgent()
+risk_agent = RiskAgent(
+    market_data_agent=market_data_agent,
+    technical_agent=technical_agent,
+    news_agent=news_agent,
+)
 
 
 class Metric(BaseModel):
@@ -117,6 +124,10 @@ class MarketDashboard(BaseModel):
     source: str
     updated_at: str
     rows: list[MarketRow]
+    total: int = 0
+    page: int = 1
+    limit: int = 50
+    total_pages: int = 1
     brief: list[BriefItem]
     positions: list[Position]
     simulation: ForwardSimulation
@@ -198,72 +209,10 @@ MOCK_ANALYSES: dict[str, StockAnalysis] = {
 }
 
 
-def fallback_market_rows() -> list[MarketRow]:
-    return [
-        MarketRow(symbol="AAPL", name="Apple Inc.", bid=213.31, mid=213.40, ask=213.49, spread=0.18, variation=1.84),
-        MarketRow(symbol="MSFT", name="Microsoft Corp.", bid=497.82, mid=498.05, ask=498.28, spread=0.46, variation=0.72),
-        MarketRow(symbol="NVDA", name="NVIDIA Corp.", bid=154.56, mid=154.63, ask=154.70, spread=0.14, variation=3.05),
-        MarketRow(symbol="GOOGL", name="Alphabet Inc.", bid=179.16, mid=179.24, ask=179.32, spread=0.16, variation=-0.64),
-        MarketRow(symbol="AMZN", name="Amazon.com Inc.", bid=222.11, mid=222.22, ask=222.33, spread=0.22, variation=1.12),
-        MarketRow(symbol="META", name="Meta Platforms", bid=602.80, mid=603.08, ask=603.36, spread=0.56, variation=-1.03),
-        MarketRow(symbol="TSLA", name="Tesla, Inc.", bid=327.65, mid=327.80, ask=327.95, spread=0.30, variation=-2.12),
-        MarketRow(symbol="JPM", name="JPMorgan Chase", bid=239.70, mid=239.82, ask=239.94, spread=0.24, variation=0.38),
-    ]
-
-
-def build_simulation(row: MarketRow) -> ForwardSimulation:
-    notional = 250000
-    horizon_days = 90
-    domestic_rate = 4.3
-    foreign_rate = 3.8
-    year_fraction = horizon_days / 360
-    forward_rate = row.mid * (1 + domestic_rate / 100 * year_fraction) / (1 + foreign_rate / 100 * year_fraction)
-    swap_points = forward_rate - row.mid
-    differential = ((forward_rate / row.mid) - 1) * 100 if row.mid else 0
-
-    return ForwardSimulation(
-        symbol=row.symbol,
-        spot=row.mid,
-        notional=notional,
-        horizon_days=horizon_days,
-        domestic_rate=domestic_rate,
-        foreign_rate=foreign_rate,
-        forward_rate=round(forward_rate, 4),
-        swap_points=round(swap_points, 4),
-        differential=round(differential, 2),
-        counter_value=round(notional * forward_rate, 2),
-    )
-
-
-def fallback_market_dashboard() -> MarketDashboard:
-    rows = fallback_market_rows()
-    leader = max(rows, key=lambda row: row.variation)
-    laggard = min(rows, key=lambda row: row.variation)
-
-    return MarketDashboard(
-        source="Fallback AI backend",
-        updated_at=datetime.now(timezone.utc).isoformat(),
-        rows=rows,
-        brief=[
-            BriefItem(tag="MCP", title="Serveur MCP indisponible", text="Le backend IA utilise un fallback local en attendant l'outil market data."),
-            BriefItem(tag="MARCHE", title=f"{leader.symbol} mene le panier", text=f"{leader.name} progresse de {leader.variation:+.2f}%."),
-            BriefItem(tag="RISQUE", title=f"Pression sur {laggard.symbol}", text=f"{laggard.name} recule de {laggard.variation:+.2f}%."),
-            BriefItem(tag="IA", title="Analyse degradee", text="Les signaux restent indicatifs tant que les donnees live ne sont pas disponibles."),
-        ],
-        positions=[
-            Position(id="D-2087", product="Forward", symbol=rows[0].symbol, side="Achat", notional="250 000 USD", entry=round(rows[0].mid * 0.98, 4), maturity="23/07/26", pnl=4800),
-            Position(id="D-2091", product="Spot", symbol=rows[1].symbol, side="Vente", notional="100 000 USD", entry=round(rows[1].mid * 1.01, 4), maturity="25/04/26", pnl=-1250),
-            Position(id="D-2094", product="Swap", symbol=leader.symbol, side="Achat", notional="1 000 000 USD", entry=round(leader.mid * 0.97, 4), maturity="23/05/26", pnl=9200),
-            Position(id="D-2098", product="Option", symbol=laggard.symbol, side="Vente", notional="50 000 USD", entry=round(laggard.mid * 1.02, 4), maturity="30/06/26", pnl=780),
-        ],
-        simulation=build_simulation(rows[0]),
-    )
-
-
-def mcp_get(path: str) -> dict | None:
+def mcp_get(path: str, params: dict | None = None, timeout: int = 20) -> dict | None:
     base_url = os.getenv("MCP_SERVER_URL", "http://localhost:4100").rstrip("/")
     try:
-        response = requests.get(f"{base_url}/{path.lstrip('/')}", timeout=8)
+        response = requests.get(f"{base_url}/{path.lstrip('/')}", params=params, timeout=timeout)
         if not response.ok:
             return None
         return response.json()
@@ -360,7 +309,6 @@ def health() -> dict[str, object]:
         "slm_enabled": slm_enabled,
         "slm_base_url": os.getenv("NEBIUS_BASE_URL", "https://api.studio.nebius.com/v1"),
         "slm_model": os.getenv("NEBIUS_MODEL", "Qwen/Qwen3-30B-A3B-Instruct-2507"),
-        "slm_model_news": os.getenv("NEBIUS_MODEL_NEWS", "zai-org/GLM-5.2"),
         "timestamp": datetime.now(timezone.utc).isoformat(),
     }
 
@@ -415,6 +363,20 @@ def get_news_memory(ticker: str) -> dict[str, object]:
     return news_agent.memory.summary(ticker.strip().upper())
 
 
+@app.get("/agents/risk/{ticker}", response_model=RiskResult)
+def run_risk_agent(ticker: str, fresh: bool = False) -> RiskResult:
+    """Diagnostic de risque via MarketDataAgent + TechnicalAgent + NewsAgent."""
+    return risk_agent.run(ticker, use_cache=not fresh)
+
+
+@app.get("/agents/risk/{ticker}/memory")
+def get_risk_memory(ticker: str) -> dict[str, object]:
+    """Faits de risque sauvegardes dans le knowledge graph."""
+    subject = ticker.strip().upper()
+    graph = risk_agent.graph
+    return {"subject": subject, "facts": graph.facts_for(subject)}
+
+
 @app.get("/agents/market-data/{ticker}/memory")
 def get_market_data_memory(ticker: str) -> dict[str, object]:
     """Memoire structuree + faits du knowledge graph pour un ticker."""
@@ -458,13 +420,29 @@ def analyze_ticker(ticker: str) -> StockAnalysis:
 
 
 @app.get("/market-dashboard", response_model=MarketDashboard)
-def market_dashboard() -> MarketDashboard:
-    payload = mcp_get("market-dashboard")
+def market_dashboard(page: int = 1, limit: int = 50, search: str = "") -> MarketDashboard:
+    payload = mcp_get(
+        "market-dashboard",
+        {"page": max(1, page), "limit": max(1, min(limit, 100)), "search": search.strip()},
+        timeout=90,
+    )
 
     if payload:
-      try:
-          return MarketDashboard.model_validate(payload)
-      except ValidationError:
-          pass
+        try:
+            return MarketDashboard.model_validate(payload)
+        except ValidationError as exc:
+            raise HTTPException(status_code=502, detail="Reponse MCP market dashboard invalide") from exc
 
-    return fallback_market_dashboard()
+    raise HTTPException(status_code=503, detail="Serveur MCP market data indisponible")
+
+
+@app.get("/stocks/us")
+def list_us_stocks(search: str = "", limit: int = 50, offset: int = 0) -> dict[str, object]:
+    payload = mcp_get(
+        "stocks/us",
+        {"search": search.strip(), "limit": max(1, min(limit, 100)), "offset": max(0, offset)},
+        timeout=30,
+    )
+    if payload:
+        return payload
+    return {"total": 0, "offset": offset, "limit": limit, "symbols": []}
