@@ -1,9 +1,9 @@
 import { Activity, Bot, CheckCircle2, GaugeCircle, LineChart, Newspaper, RefreshCw, XCircle } from "lucide-react";
 import { useEffect, useState } from "react";
-import { fetchAgentEvaluation, fetchNewsEvaluation, fetchTechnicalEvaluation } from "../services/analysisApi";
-import type { EvaluationGrade, EvaluationReport } from "../types";
+import { fetchAgentEvaluation, fetchNewsEvaluation, fetchTechnicalEvaluation, searchUsStocks } from "../services/analysisApi";
+import type { EvaluationGrade, EvaluationReport, UsStockSymbol } from "../types";
 
-const DEMO_TICKERS = ["AAPL", "MSFT", "NVDA", "GOOGL", "AMZN", "META", "TSLA", "JPM"];
+const QUICK_TICKERS = ["AAPL", "MSFT", "NVDA", "GOOGL", "AMZN", "META", "TSLA", "JPM"];
 
 type AgentKind = "market-data" | "technical" | "news";
 
@@ -65,6 +65,8 @@ function metricLabel(name: string): string {
 export function AgentMetrics() {
   const [agent, setAgent] = useState<AgentKind>("market-data");
   const [ticker, setTicker] = useState("AAPL");
+  const [tickerQuery, setTickerQuery] = useState("AAPL");
+  const [suggestions, setSuggestions] = useState<UsStockSymbol[]>([]);
   const [report, setReport] = useState<EvaluationReport | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -91,6 +93,20 @@ export function AgentMetrics() {
   useEffect(() => {
     void loadEvaluation(agent, ticker);
   }, [agent, ticker]);
+
+  useEffect(() => {
+    const query = tickerQuery.trim();
+    if (query.length < 1) {
+      setSuggestions([]);
+      return;
+    }
+    const timer = window.setTimeout(() => {
+      void searchUsStocks(query, 12)
+        .then((result) => setSuggestions(result.symbols))
+        .catch(() => setSuggestions([]));
+    }, 250);
+    return () => window.clearTimeout(timer);
+  }, [tickerQuery]);
 
   const activeAgent = AGENTS.find((entry) => entry.id === agent) ?? AGENTS[0];
   const passedCount = report?.metrics.filter((metric) => metric.passed).length ?? 0;
@@ -140,13 +156,53 @@ export function AgentMetrics() {
         ))}
       </div>
 
-      <div className="metrics-tickers" role="tablist" aria-label="Choisir un ticker à évaluer">
-        {DEMO_TICKERS.map((symbol) => (
+      <div className="metrics-ticker-search">
+        <input
+          className="market-search"
+          type="search"
+          placeholder="Ticker US (ex. JPM, Apple…)"
+          value={tickerQuery}
+          onChange={(event) => setTickerQuery(event.target.value.toUpperCase())}
+          onKeyDown={(event) => {
+            if (event.key === "Enter" && tickerQuery.trim()) {
+              setTicker(tickerQuery.trim().toUpperCase());
+            }
+          }}
+        />
+        <button type="button" className="market-search-btn" onClick={() => setTicker(tickerQuery.trim().toUpperCase())}>
+          Évaluer
+        </button>
+      </div>
+
+      {suggestions.length > 0 ? (
+        <div className="metrics-suggestions">
+          {suggestions.map((entry) => (
+            <button
+              key={entry.symbol}
+              type="button"
+              className={`ticker-chip ${entry.symbol === ticker ? "active" : ""}`}
+              onClick={() => {
+                setTicker(entry.symbol);
+                setTickerQuery(entry.symbol);
+                setSuggestions([]);
+              }}
+            >
+              {entry.symbol}
+            </button>
+          ))}
+        </div>
+      ) : null}
+
+      <div className="metrics-tickers" role="tablist" aria-label="Raccourcis tickers populaires">
+        {QUICK_TICKERS.map((symbol) => (
           <button
             key={symbol}
             type="button"
             className={`ticker-chip ${symbol === ticker ? "active" : ""}`}
-            onClick={() => setTicker(symbol)}
+            onClick={() => {
+              setTicker(symbol);
+              setTickerQuery(symbol);
+            }}
           >
             {symbol}
           </button>

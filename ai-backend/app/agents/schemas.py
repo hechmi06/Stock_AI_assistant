@@ -122,6 +122,40 @@ class NewsResult(BaseModel):
     slm_summary: SlmSummary | None = None
 
 
+RiskLevel = Literal["low", "medium", "high"]
+RiskCategory = Literal["market", "technical", "fundamental", "news", "data_quality"]
+
+
+class RiskItem(BaseModel):
+    category: RiskCategory
+    level: RiskLevel
+    title: str
+    description: str
+    evidence: list[str] = Field(default_factory=list)
+    score_impact: int = Field(default=0, ge=0, le=100)
+
+
+class AgentRiskSnapshot(BaseModel):
+    market_data_status: MarketDataStatus = "failed"
+    technical_status: MarketDataStatus = "failed"
+    news_status: MarketDataStatus = "failed"
+    market_data_errors: list[str] = Field(default_factory=list)
+    technical_errors: list[str] = Field(default_factory=list)
+    news_errors: list[str] = Field(default_factory=list)
+
+
+class RiskResult(BaseModel):
+    ticker: str
+    status: MarketDataStatus
+    overall_risk_level: RiskLevel
+    risk_score: int = Field(default=0, ge=0, le=100)
+    risks: list[RiskItem] = Field(default_factory=list)
+    component_status: AgentRiskSnapshot = Field(default_factory=AgentRiskSnapshot)
+    warnings: list[str] = Field(default_factory=list)
+    errors: list[str] = Field(default_factory=list)
+    slm_summary: SlmSummary | None = None
+
+
 class MarketDataResult(BaseModel):
     ticker: str
     status: MarketDataStatus

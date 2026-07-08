@@ -361,10 +361,9 @@ NEBIUS_API_KEY=your_nebius_api_key_here
 NEBIUS_ENABLED=true
 NEBIUS_BASE_URL=https://api.studio.nebius.com/v1
 NEBIUS_MODEL=Qwen/Qwen3-30B-A3B-Instruct-2507
-NEBIUS_MODEL_NEWS=zai-org/GLM-5.2
 ```
 
-Le SLM s'active automatiquement des que `NEBIUS_API_KEY` est renseignee (et `NEBIUS_ENABLED` different de `false`). `NEBIUS_MODEL` sert MarketDataAgent et TechnicalAgent ; `NEBIUS_MODEL_NEWS` (defaut `zai-org/GLM-5.2`) sert NewsAgent pour le sentiment et les resumes en francais.
+Le SLM s'active automatiquement des que `NEBIUS_API_KEY` est renseignee (et `NEBIUS_ENABLED` different de `false`). Tous les agents (MarketData, Technical, News) utilisent `NEBIUS_MODEL`.
 
 Remarque : selon le compte, la base URL peut etre `https://api.studio.nebius.com/v1` ou `https://api.tokenfactory.nebius.com/v1`. Ajuster `NEBIUS_BASE_URL` si besoin.
 
@@ -507,7 +506,7 @@ technical_summary
 Role :
 
 - recuperer les actualites recentes (outil MCP `news/{ticker}` : FMP + Yahoo RSS + Finnhub + Google News RSS (gratuit) + NewsData.io en parallele, deduplication par titre, plafond de 6 articles par source, cache 10 min) ;
-- analyser le sentiment global (label + score entre -1 et 1) et le sentiment de chaque article via le SLM Nebius (`zai-org/GLM-5.2` par defaut, configurable via `NEBIUS_MODEL_NEWS`) ;
+- analyser le sentiment global (label + score entre -1 et 1) et le sentiment de chaque article via le SLM Nebius (meme modele que les autres agents, `NEBIUS_MODEL`) ;
 - detecter les evenements importants (resultats, M&A, proces, lancements) ;
 - memoriser : memoire documentaire SQLite (runs + articles dedupliques + historique de sentiment) et faits news dans le Knowledge Graph (`has_news_sentiment`, `affected_by_event`, `news_from`) ;
 - cache TTL agent : 30 min (`NEWS_CACHE_TTL_SECONDS`), contournable avec `?fresh=true`.
@@ -764,16 +763,14 @@ yfinance apporte (profil + historique), avec de vraies APIs et des quotas connus
 
 ## Tickers de demonstration
 
+Le tableau de marche charge **tout l'univers US** via Finnhub (fallback FMP) avec pagination :
+
 ```txt
-AAPL
-MSFT
-NVDA
-TSLA
-GOOGL
-AMZN
-META
-JPM
+GET /api/stocks/market/dashboard?page=1&limit=50&search=AAPL
+GET /api/stocks/us?search=JPM&limit=20
 ```
+
+Raccourcis populaires pour les metriques : AAPL, MSFT, NVDA, TSLA, GOOGL, AMZN, META, JPM — mais **n'importe quel symbole US** est supporte par les agents.
 
 ## Decision actuelle
 

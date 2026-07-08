@@ -1,4 +1,4 @@
-import { Injectable } from "@nestjs/common";
+import { Injectable, ServiceUnavailableException } from "@nestjs/common";
 
 type StockAnalysis = {
   ticker: string;
@@ -17,6 +17,10 @@ type StockAnalysis = {
 type MarketDashboard = {
   source: string;
   updated_at: string;
+  total: number;
+  page: number;
+  limit: number;
+  total_pages: number;
   rows: Array<{
     symbol: string;
     name: string;
@@ -156,6 +160,39 @@ type NewsResult = {
   } | null;
 };
 
+type RiskResult = {
+  ticker: string;
+  status: "success" | "partial" | "failed";
+  overall_risk_level: "low" | "medium" | "high";
+  risk_score: number;
+  risks: Array<{
+    category: "market" | "technical" | "fundamental" | "news" | "data_quality";
+    level: "low" | "medium" | "high";
+    title: string;
+    description: string;
+    evidence: string[];
+    score_impact: number;
+  }>;
+  component_status: {
+    market_data_status: "success" | "partial" | "failed";
+    technical_status: "success" | "partial" | "failed";
+    news_status: "success" | "partial" | "failed";
+    market_data_errors: string[];
+    technical_errors: string[];
+    news_errors: string[];
+  };
+  warnings: string[];
+  errors: string[];
+  slm_summary: {
+    provider: string;
+    model: string;
+    summary: string;
+    data_quality: string;
+    key_points: string[];
+    warnings: string[];
+  } | null;
+};
+
 type MetricResult = {
   name: string;
   score: number;
@@ -202,9 +239,18 @@ const fallbackAnalysis: Record<string, StockAnalysis> = {
 export class StocksService {
   private readonly aiBackendUrl = process.env.AI_BACKEND_URL ?? "http://localhost:8000";
 
-  async getMarketDashboard(): Promise<MarketDashboard> {
+  async getMarketDashboard(options?: { page?: number; limit?: number; search?: string }): Promise<MarketDashboard> {
+    const page = options?.page ?? 1;
+    const limit = options?.limit ?? 25;
+    const search = options?.search ?? "";
+    const params = new URLSearchParams({
+      page: String(page),
+      limit: String(limit),
+      search,
+    });
+
     try {
-      const response = await fetch(`${this.aiBackendUrl}/market-dashboard`);
+      const response = await fetch(`${this.aiBackendUrl}/market-dashboard?${params.toString()}`);
 
       if (!response.ok) {
         throw new Error(`AI backend returned ${response.status}`);
@@ -212,34 +258,28 @@ export class StocksService {
 
       return (await response.json()) as MarketDashboard;
     } catch {
-      return {
-        source: "Fallback gateway",
-        updated_at: new Date().toISOString(),
-        rows: [
-          { symbol: "AAPL", name: "Apple Inc.", bid: 213.31, mid: 213.4, ask: 213.49, spread: 0.18, variation: 1.84 },
-          { symbol: "MSFT", name: "Microsoft Corp.", bid: 497.82, mid: 498.05, ask: 498.28, spread: 0.46, variation: 0.72 },
-          { symbol: "NVDA", name: "NVIDIA Corp.", bid: 154.56, mid: 154.63, ask: 154.7, spread: 0.14, variation: 3.05 },
-          { symbol: "TSLA", name: "Tesla, Inc.", bid: 327.65, mid: 327.8, ask: 327.95, spread: 0.3, variation: -2.12 },
-        ],
-        brief: [
-          { tag: "DATA", title: "Mode fallback", text: "Le gateway affiche un panier local car le backend IA ne repond pas." },
-        ],
-        positions: [
-          { id: "D-2087", product: "Forward", symbol: "AAPL", side: "Achat", notional: "250 000 USD", entry: 209.13, maturity: "23/07/26", pnl: 4800 },
-        ],
-        simulation: {
-          symbol: "AAPL",
-          spot: 213.4,
-          notional: 250000,
-          horizon_days: 90,
-          domestic_rate: 4.3,
-          foreign_rate: 3.8,
-          forward_rate: 213.66,
-          swap_points: 0.26,
-          differential: 0.12,
-          counter_value: 53415000,
-        },
-      };
+      throw new ServiceUnavailableException("Market dashboard indisponible — aucune donnee statique de secours.");
+    }
+  }
+
+  async searchUsStocks(options?: { search?: string; limit?: number; offset?: number }) {
+    const search = options?.search ?? "";
+    const limit = options?.limit ?? 50;
+    const offset = options?.offset ?? 0;
+    const params = new URLSearchParams({
+      search,
+      limit: String(limit),
+      offset: String(offset),
+    });
+
+    try {
+      const response = await fetch(`${this.aiBackendUrl}/stocks/us?${params.toString()}`);
+      if (!response.ok) {
+        throw new Error(`AI backend returned ${response.status}`);
+      }
+      return await response.json();
+    } catch {
+      return { total: 0, offset, limit, symbols: [] };
     }
   }
 
@@ -367,6 +407,39 @@ export class StocksService {
         key_events: [],
         warnings: [],
         errors: ["Gateway could not reach the AI backend NewsAgent endpoint."],
+        slm_summary: null,
+      };
+    }
+  }
+
+  async getRisk(ticker: string): Promise<RiskResult> {
+    const normalizedTicker = ticker.trim().toUpperCase();
+
+    try {
+      const response = await fetch(`${this.aiBackendUrl}/agents/risk/${normalizedTicker}`);
+
+      if (!response.ok) {
+        throw new Error(`AI backend returned ${response.status}`);
+      }
+
+      return (await response.json()) as RiskResult;
+    } catch {
+      return {
+        ticker: normalizedTicker || "AAPL",
+        status: "failed",
+        overall_risk_level: "high",
+        risk_score: 100,
+        risks: [],
+        component_status: {
+          market_data_status: "failed",
+          technical_status: "failed",
+          news_status: "failed",
+          market_data_errors: [],
+          technical_errors: [],
+          news_errors: [],
+        },
+        warnings: [],
+        errors: ["Gateway could not reach the AI backend RiskAgent endpoint."],
         slm_summary: null,
       };
     }

@@ -1,6 +1,7 @@
 from .market_data_agent import MarketDataAgent
 from .news_agent import NewsAgent
-from .schemas import MarketDataResult, NewsResult, TechnicalResult
+from .risk_agent import RiskAgent
+from .schemas import MarketDataResult, NewsResult, RiskResult, TechnicalResult
 from .technical_agent import TechnicalAgent
 
 __all__ = [
@@ -8,6 +9,8 @@ __all__ = [
     "MarketDataResult",
     "NewsAgent",
     "NewsResult",
+    "RiskAgent",
+    "RiskResult",
     "TechnicalAgent",
     "TechnicalResult",
 ]

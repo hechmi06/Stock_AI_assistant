@@ -11,7 +11,7 @@ import threading
 from datetime import datetime, timezone
 from pathlib import Path
 
-from app.agents.schemas import MarketDataResult, NewsResult, TechnicalResult
+from app.agents.schemas import MarketDataResult, NewsResult, RiskResult, TechnicalResult
 
 from .structured_memory import default_db_path
 
@@ -31,6 +31,8 @@ _FUNCTIONAL_PREDICATES = {
     "has_technical_score",
     "has_news_sentiment",
     "has_news_sentiment_score",
+    "has_overall_risk_level",
+    "has_risk_score",
 }
 
 _SCHEMA = """
@@ -136,6 +138,22 @@ class KnowledgeGraph:
         for source in result.sources_used:
             self.add_fact(ticker, "news_from", source)
             self.add_fact(source, "is_a", "news_source")
+
+    def ingest_risk_result(self, result: RiskResult) -> None:
+        """Faits de risque : score global, niveau et preuves par categorie."""
+        ticker = result.ticker
+
+        self.add_fact(ticker, "has_overall_risk_level", result.overall_risk_level)
+        self.add_fact(ticker, "has_risk_score", str(result.risk_score))
+        for risk in result.risks:
+            risk_id = f"{ticker}:{risk.category}:{risk.title}"
+            self.add_fact(ticker, "has_risk", risk_id)
+            self.add_fact(risk_id, "is_a", "risk")
+            self.add_fact(risk_id, "has_category", risk.category)
+            self.add_fact(risk_id, "has_level", risk.level)
+            self.add_fact(risk_id, "has_score_impact", str(risk.score_impact))
+            for evidence in risk.evidence:
+                self.add_fact(risk_id, "supported_by", evidence)
 
     def facts_for(self, subject: str) -> list[dict[str, str]]:
         with self._lock:

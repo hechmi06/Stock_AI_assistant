@@ -38,7 +38,6 @@ services:
       - NEBIUS_ENABLED=${NEBIUS_ENABLED:-true}
       - NEBIUS_BASE_URL=${NEBIUS_BASE_URL:-https://api.studio.nebius.com/v1}
       - NEBIUS_MODEL=${NEBIUS_MODEL:-Qwen/Qwen3-30B-A3B-Instruct-2507}
-      - NEBIUS_MODEL_NEWS=${NEBIUS_MODEL_NEWS:-zai-org/GLM-5.2}
     volumes:
       - ./ai-backend:/app
     depends_on:

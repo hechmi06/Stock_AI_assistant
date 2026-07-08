@@ -72,9 +72,25 @@ export type MarketDashboard = {
   source: string;
   updated_at: string;
   rows: MarketRow[];
+  total: number;
+  page: number;
+  limit: number;
+  total_pages: number;
   brief: BriefItem[];
   positions: Position[];
   simulation: ForwardSimulation;
+};
+
+export type UsStockSymbol = {
+  symbol: string;
+  name: string;
+};
+
+export type UsStockSearchResult = {
+  total: number;
+  offset: number;
+  limit: number;
+  symbols: UsStockSymbol[];
 };
 
 export type NewsSentiment = "positive" | "negative" | "neutral" | "mixed";

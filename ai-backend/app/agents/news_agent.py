@@ -35,7 +35,7 @@ class NewsAgent:
         memory: NewsAgentMemory | None = None,
     ) -> None:
         self.mcp_client = mcp_client or McpClient()
-        self.slm_client = slm_client or NebiusClient.for_agent("news")
+        self.slm_client = slm_client or NebiusClient()
         self.memory = memory or NewsAgentMemory()
 
     def run(self, ticker: str, use_cache: bool = True) -> NewsResult:
