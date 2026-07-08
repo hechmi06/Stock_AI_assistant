@@ -58,6 +58,10 @@ function formatVolume(value: number | null | undefined) {
 const fallbackDashboard: MarketDashboard = {
   source: "Demo locale",
   updated_at: new Date().toISOString(),
+  total: 8,
+  page: 1,
+  limit: 50,
+  total_pages: 1,
   rows: [
     { symbol: "AAPL", name: "Apple Inc.", bid: 213.31, mid: 213.4, ask: 213.49, spread: 0.18, variation: 1.84, high: 215.12, low: 210.50, volume: 62800000 },
     { symbol: "MSFT", name: "Microsoft Corp.", bid: 497.82, mid: 498.05, ask: 498.28, spread: 0.46, variation: 0.72, high: 500.10, low: 494.20, volume: 18400000 },
