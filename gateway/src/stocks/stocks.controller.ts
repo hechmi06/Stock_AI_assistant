@@ -104,6 +104,18 @@ export class StocksController {
   }
 
   @ApiOperation({
+    summary: "Evaluation qualite du RiskAgent",
+    description:
+      "Calcule les 12 metriques de coherence du diagnostic de risque (score, grade, passed) pour la page Metriques des agents.",
+  })
+  @ApiParam({ name: "ticker", example: "MSFT", description: "Symbole boursier a evaluer" })
+  @ApiOkResponse({ type: EvaluationReportDto })
+  @Get(":ticker/risk/evaluation")
+  getRiskEvaluation(@Param("ticker") ticker: string) {
+    return this.stocksService.getRiskEvaluation(ticker);
+  }
+
+  @ApiOperation({
     summary: "Evaluation qualite du NewsAgent",
     description:
       "Calcule les 11 metriques de qualite des actualites (score, grade, passed) pour la page Metriques des agents.",

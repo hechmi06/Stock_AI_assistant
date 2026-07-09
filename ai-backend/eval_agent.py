@@ -1,12 +1,13 @@
-"""Harnais d'evaluation du MarketDataAgent.
+"""Harnais d'evaluation des agents.
 
-Lance l'agent sur un lot de tickers, calcule les 11 metriques de qualite de
-collecte, affiche un rapport console et ecrit un rapport JSON.
+Lance un agent sur un lot de tickers, calcule ses metriques de qualite,
+affiche un rapport console et ecrit un rapport JSON.
 
 Usage :
-    python eval_agent.py                      # lot de demo (8 tickers)
-    python eval_agent.py AAPL MSFT NVDA       # tickers personnalises
-    python eval_agent.py --json rapport.json  # chemin de sortie JSON
+    python eval_agent.py                          # MarketDataAgent, lot de demo
+    python eval_agent.py AAPL MSFT NVDA           # tickers personnalises
+    python eval_agent.py --agent risk MSFT        # evaluer le RiskAgent
+    python eval_agent.py --json rapport.json      # chemin de sortie JSON
 """
 
 from __future__ import annotations
@@ -17,8 +18,14 @@ import os
 import time
 from pathlib import Path
 
-from app.agents import MarketDataAgent
-from app.agents.evaluation import EvaluationReport, evaluate_market_data
+from app.agents import MarketDataAgent, NewsAgent, RiskAgent, TechnicalAgent
+from app.agents.evaluation import (
+    EvaluationReport,
+    evaluate_market_data,
+    evaluate_news,
+    evaluate_risk,
+    evaluate_technical,
+)
 
 DEMO_TICKERS = ["AAPL", "MSFT", "NVDA", "GOOGL", "AMZN", "META", "TSLA", "JPM"]
 DEFAULT_JSON = "eval_report.json"
@@ -70,9 +77,47 @@ def _aggregate(reports: list[EvaluationReport]) -> dict:
     }
 
 
+def _evaluate_ticker(agent_kind: str, ticker: str, period: str) -> tuple[EvaluationReport, float]:
+    """Lance l'agent choisi sur un ticker et renvoie (rapport, duree_ms)."""
+    start = time.perf_counter()
+    try:
+        if agent_kind == "market-data":
+            result = MarketDataAgent().run(ticker, period=period)
+            report = evaluate_market_data(result, agent_available=True)
+        elif agent_kind == "technical":
+            report = evaluate_technical(TechnicalAgent().run(ticker))
+        elif agent_kind == "news":
+            report = evaluate_news(NewsAgent().run(ticker))
+        else:  # risk
+            report = evaluate_risk(RiskAgent().run(ticker))
+    except Exception as error:  # backend/MCP injoignable
+        report = EvaluationReport(
+            ticker=ticker,
+            metrics=[
+                {
+                    "name": "agent_availability",
+                    "score": 0.0,
+                    "passed": False,
+                    "message": f"Agent injoignable : {error}",
+                }
+            ],
+            total_score=0.0,
+            grade="poor",
+            passed=False,
+        )
+    elapsed_ms = (time.perf_counter() - start) * 1000
+    return report, elapsed_ms
+
+
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Evaluation du MarketDataAgent")
+    parser = argparse.ArgumentParser(description="Evaluation des agents")
     parser.add_argument("tickers", nargs="*", help="Tickers a evaluer (defaut: lot de demo)")
+    parser.add_argument(
+        "--agent",
+        default="market-data",
+        choices=["market-data", "technical", "news", "risk"],
+        help="Agent a evaluer (defaut: market-data)",
+    )
     parser.add_argument("--json", default=DEFAULT_JSON, help="Chemin du rapport JSON de sortie")
     parser.add_argument("--period", default="6mo", help="Periode historique (defaut: 6mo)")
     args = parser.parse_args()
@@ -80,22 +125,11 @@ def main() -> None:
     _load_root_env()
 
     tickers = [t.strip().upper() for t in (args.tickers or DEMO_TICKERS) if t.strip()]
-    agent = MarketDataAgent()
 
-    print(f"Evaluation de {len(tickers)} ticker(s) : {', '.join(tickers)}")
+    print(f"Evaluation [{args.agent}] de {len(tickers)} ticker(s) : {', '.join(tickers)}")
     reports: list[EvaluationReport] = []
     for ticker in tickers:
-        start = time.perf_counter()
-        agent_available = True
-        try:
-            result = agent.run(ticker, period=args.period)
-        except Exception as error:  # backend/MCP injoignable
-            agent_available = False
-            from app.agents import MarketDataResult
-
-            result = MarketDataResult(ticker=ticker, status="failed", errors=[str(error)])
-        elapsed_ms = (time.perf_counter() - start) * 1000
-        report = evaluate_market_data(result, agent_available=agent_available)
+        report, elapsed_ms = _evaluate_ticker(args.agent, ticker, args.period)
         reports.append(report)
         _print_report(report, elapsed_ms)
 

@@ -38,7 +38,7 @@ class NewsAgent:
         self.slm_client = slm_client or NebiusClient()
         self.memory = memory or NewsAgentMemory()
 
-    def run(self, ticker: str, use_cache: bool = True) -> NewsResult:
+    def run(self, ticker: str, use_cache: bool = True, with_slm: bool = True) -> NewsResult:
         normalized_ticker = ticker.strip().upper()
         if not normalized_ticker:
             return NewsResult(ticker="", status="failed", errors=["Ticker is required."])
@@ -55,7 +55,8 @@ class NewsAgent:
         result = self._normalize_payload(normalized_ticker, payload)
 
         if result.articles:
-            self._add_sentiment_analysis(result)
+            if with_slm:
+                self._add_sentiment_analysis(result)
             result.status = "success" if result.sentiment_label else "partial"
         else:
             result.status = "failed"

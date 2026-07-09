@@ -8,7 +8,9 @@ des regles transparentes pour produire un score de risque et des preuves.
 from __future__ import annotations
 
 from .market_data_agent import MarketDataAgent
+from .nebius_client import NebiusClient
 from .news_agent import NewsAgent
+from .risk_scoring import compute_risk_score, risk_score_breakdown
 from .schemas import (
     AgentRiskSnapshot,
     MarketDataResult,
@@ -16,6 +18,7 @@ from .schemas import (
     RiskItem,
     RiskLevel,
     RiskResult,
+    SlmSummary,
     TechnicalResult,
 )
 from .technical_agent import TechnicalAgent
@@ -27,10 +30,12 @@ class RiskAgent:
         market_data_agent: MarketDataAgent | None = None,
         technical_agent: TechnicalAgent | None = None,
         news_agent: NewsAgent | None = None,
+        slm_client: NebiusClient | None = None,
     ) -> None:
         self.market_data_agent = market_data_agent or MarketDataAgent()
         self.technical_agent = technical_agent or TechnicalAgent(market_data_agent=self.market_data_agent)
         self.news_agent = news_agent or NewsAgent()
+        self.slm_client = slm_client or NebiusClient.for_agent("risk")
         memory = getattr(self.market_data_agent, "memory", None)
         self.graph = getattr(memory, "graph", None)
 
@@ -42,34 +47,53 @@ class RiskAgent:
                 status="failed",
                 overall_risk_level="high",
                 risk_score=100,
+                data_confidence_score=0,
+                data_confidence_level="low",
                 errors=["Ticker is required."],
             )
 
         market_data = self.market_data_agent.run(normalized_ticker, with_slm=False, use_cache=use_cache)
-        technical = self.technical_agent.run(normalized_ticker, use_cache=use_cache)
-        news = self.news_agent.run(normalized_ticker, use_cache=use_cache)
+        technical = self.technical_agent.run(normalized_ticker, use_cache=use_cache, with_slm=False)
+        # Le sentiment news est produit par le SLM : sans lui, sentiment_label
+        # reste None, la dimension "risque news" ne se declenche jamais et
+        # NewsAgent est fige en "partial". C'est le coeur du signal news pour le
+        # risque, donc on garde with_slm active ici (market/technical n'en ont
+        # pas besoin, leurs chiffres sont calcules sans SLM).
+        news = self.news_agent.run(normalized_ticker, use_cache=use_cache, with_slm=True)
 
         risks: list[RiskItem] = []
         warnings: list[str] = []
+
+        for result in (market_data, news):
+            warnings.extend(result.warnings)
+        warnings.extend(self._slm_warnings(market_data.errors))
+        warnings.extend(self._slm_warnings(technical.errors))
+        warnings.extend(self._slm_warnings(news.errors))
 
         risks.extend(self._market_risks(market_data))
         risks.extend(self._fundamental_risks(market_data))
         risks.extend(self._technical_risks(technical))
         risks.extend(self._news_risks(news))
-        risks.extend(self._data_quality_risks(market_data, technical, news))
+        risks.extend(self._data_quality_risks(market_data, technical, news, warnings))
 
-        for result in (market_data, news):
-            warnings.extend(result.warnings)
-
-        score = min(100, sum(risk.score_impact for risk in risks))
+        # Le risk_score ne mesure que le risque intrinseque du titre
+        # (marche, technique, fondamental, news), pondere par categorie. Les
+        # problemes de qualite des donnees ne gonflent pas le risque (categorie
+        # sans poids dans risk_scoring) : ils reduisent uniquement le
+        # data_confidence_score. Sinon un titre sain servi pendant un rate-limit
+        # de source secondaire serait faussement classe plus risque.
+        score = compute_risk_score(risks)
+        score_breakdown = risk_score_breakdown(risks)
         overall_level = self._level_from_score(score)
+        data_confidence_score = self._data_confidence_score(market_data, technical, news, warnings)
+        data_confidence_level = self._confidence_level_from_score(data_confidence_score)
         snapshot = AgentRiskSnapshot(
             market_data_status=market_data.status,
             technical_status=technical.status,
             news_status=news.status,
-            market_data_errors=market_data.errors,
-            technical_errors=technical.errors,
-            news_errors=news.errors,
+            market_data_errors=self._non_slm_errors(market_data.errors),
+            technical_errors=self._non_slm_errors(technical.errors),
+            news_errors=self._non_slm_errors(news.errors),
         )
 
         statuses = [market_data.status, technical.status, news.status]
@@ -88,13 +112,27 @@ class RiskAgent:
             status=status,
             overall_risk_level=overall_level,
             risk_score=score,
+            risk_score_breakdown=score_breakdown,
+            data_confidence_score=data_confidence_score,
+            data_confidence_level=data_confidence_level,
             risks=risks,
             component_status=snapshot,
             warnings=warnings,
             errors=errors,
         )
+        self._add_slm_summary(result)
         self._remember(result)
         return result
+
+    def _add_slm_summary(self, result: RiskResult) -> None:
+        if result.status == "failed":
+            return
+        try:
+            summary = self.slm_client.summarize_risk_data(result.model_dump())
+            if summary:
+                result.slm_summary = SlmSummary.model_validate(summary)
+        except Exception as error:
+            result.warnings.append(f"Nebius SLM unavailable for RiskAgent: {error}")
 
     def _market_risks(self, result: MarketDataResult) -> list[RiskItem]:
         risks: list[RiskItem] = []
@@ -314,7 +352,11 @@ class RiskAgent:
         return risks
 
     def _data_quality_risks(
-        self, market_data: MarketDataResult, technical: TechnicalResult, news: NewsResult
+        self,
+        market_data: MarketDataResult,
+        technical: TechnicalResult,
+        news: NewsResult,
+        warnings: list[str],
     ) -> list[RiskItem]:
         risks: list[RiskItem] = []
         failed = [
@@ -335,6 +377,26 @@ class RiskAgent:
                     "Un ou plusieurs agents amont n'ont pas fourni de resultat exploitable.",
                     [f"failed_agents = {', '.join(failed)}"],
                     12 if len(failed) == 1 else 25,
+                )
+            )
+        partial = [
+            name
+            for name, status in [
+                ("MarketDataAgent", market_data.status),
+                ("TechnicalAgent", technical.status),
+                ("NewsAgent", news.status),
+            ]
+            if status == "partial"
+        ]
+        if partial:
+            risks.append(
+                self._risk(
+                    "data_quality",
+                    "medium",
+                    "Resultats partiels",
+                    "Un ou plusieurs agents amont ont fonctionne avec une couverture incomplete.",
+                    [f"partial_agents = {', '.join(partial)}"],
+                    6 if len(partial) == 1 else 10,
                 )
             )
         if market_data.used_fallback:
@@ -359,7 +421,84 @@ class RiskAgent:
                     6,
                 )
             )
+        rate_limit_warnings = self._matching_warnings(warnings, ["rate limit", "too many requests"])
+        if rate_limit_warnings:
+            risks.append(
+                self._risk(
+                    "data_quality",
+                    "medium",
+                    "API limitee par quota",
+                    "Une source importante a refuse temporairement les requetes, ce qui reduit la fraicheur ou la couverture.",
+                    rate_limit_warnings[:3],
+                    7,
+                )
+            )
+        unavailable_warnings = self._matching_warnings(
+            warnings,
+            ["unavailable", "indisponible", "missing key", "quota", "restricted", "fetch failed"],
+        )
+        if unavailable_warnings:
+            risks.append(
+                self._risk(
+                    "data_quality",
+                    "medium",
+                    "Sources externes indisponibles",
+                    "Certaines sources de donnees n'ont pas pu etre exploitees pendant l'analyse.",
+                    unavailable_warnings[:3],
+                    5,
+                )
+            )
+        if news.status == "partial" or len(news.sources_used) < 2:
+            risks.append(
+                self._risk(
+                    "data_quality",
+                    "medium",
+                    "Couverture news partielle",
+                    "L'analyse du sentiment repose sur un nombre limite de sources d'actualites.",
+                    [f"news_status = {news.status}", f"news_sources_used = {news.sources_used}"],
+                    5,
+                )
+            )
         return risks
+
+    def _data_confidence_score(
+        self,
+        market_data: MarketDataResult,
+        technical: TechnicalResult,
+        news: NewsResult,
+        warnings: list[str],
+    ) -> int:
+        score = 100
+        for status in (market_data.status, technical.status, news.status):
+            if status == "failed":
+                score -= 30
+            elif status == "partial":
+                score -= 12
+
+        if len(market_data.sources_used) < 2:
+            score -= 12
+        if not market_data.historical_prices:
+            score -= 20
+        if not market_data.company_profile.name:
+            score -= 10
+        if not news.articles:
+            score -= 20
+        elif len(news.sources_used) < 2:
+            score -= 10
+
+        rate_limit_count = len(self._matching_warnings(warnings, ["rate limit", "too many requests"]))
+        source_issue_count = len(
+            self._matching_warnings(
+                warnings,
+                ["unavailable", "indisponible", "missing key", "quota", "restricted", "fetch failed"],
+            )
+        )
+        cache_count = len(self._matching_warnings(warnings, ["cache memoire"]))
+
+        score -= min(20, rate_limit_count * 10)
+        score -= min(25, source_issue_count * 5)
+        score -= min(10, cache_count * 5)
+        return max(0, min(100, score))
 
     def _remember(self, result: RiskResult) -> None:
         if self.graph is not None:
@@ -390,6 +529,22 @@ class RiskAgent:
             return "medium"
         return "low"
 
+    def _confidence_level_from_score(self, score: int) -> RiskLevel:
+        if score >= 80:
+            return "high"
+        if score >= 55:
+            return "medium"
+        return "low"
+
+    def _matching_warnings(self, warnings: list[str], needles: list[str]) -> list[str]:
+        matches = []
+        lowered_needles = [needle.lower() for needle in needles]
+        for warning in warnings:
+            lowered = warning.lower()
+            if any(needle in lowered for needle in lowered_needles):
+                matches.append(warning)
+        return matches
+
     def _first_number(self, values: dict[str, object], keys: list[str]) -> float | None:
         for key in keys:
             value = values.get(key)
@@ -405,3 +560,9 @@ class RiskAgent:
             evidence.append(f"sentiment_score = {result.sentiment_score:.2f}")
         evidence.extend([f"event = {event}" for event in result.key_events[:3]])
         return evidence or ["news sentiment unavailable"]
+
+    def _non_slm_errors(self, errors: list[str]) -> list[str]:
+        return [error for error in errors if "Nebius SLM unavailable" not in error]
+
+    def _slm_warnings(self, errors: list[str]) -> list[str]:
+        return [error for error in errors if "Nebius SLM unavailable" in error]

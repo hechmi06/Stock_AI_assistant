@@ -4,6 +4,49 @@ Assistant IA d'analyse boursiere construit progressivement avec une architecture
 
 Le projet commence par un agent fiable de collecte de donnees marche, puis evoluera vers un orchestrateur IA capable d'appeler des agents specialises : technique, news, RAG, risque et synthese.
 
+## Etat actuel du projet
+
+Nous sommes actuellement a la phase **multi-agents valides individuellement**.
+
+Agents deja implementes :
+
+| Agent | Statut | Role actuel |
+|---|---|---|
+| `MarketDataAgent` | Fait | Collecte prix, historique, profil, ratios, etats financiers |
+| `TechnicalAgent` | Fait | Calcule RSI, moyennes mobiles, volatilite, tendance, supports/resistances |
+| `NewsAgent` | Fait | Recupere les actualites, deduplique les articles, analyse le sentiment via SLM |
+| `RiskAgent` | Fait | Combine MarketData + Technical + News pour produire un diagnostic de risque |
+| `RAGAgent` | Pas encore fait | Analysera les documents financiers PDF/HTML |
+| `SynthesisAgent` | Pas encore fait | Produira la synthese finale et la recommandation simulee |
+| Orchestrateur LangGraph | Pas encore fait | Appellera les agents dans le bon ordre selon la question utilisateur |
+
+Etat fonctionnel actuel :
+
+- les APIs passent par le `mcp-server` ;
+- le backend FastAPI expose les agents un par un ;
+- le gateway NestJS expose les agents dans Swagger ;
+- le frontend existe mais ne montre pas encore toutes les sorties avancees des agents ;
+- les agents peuvent etre testes dans Swagger avant d'etre branches dans l'UI finale.
+
+Endpoints principaux de validation :
+
+```txt
+MarketDataAgent  http://localhost:8000/agents/market-data/MSFT?fresh=true
+TechnicalAgent   http://localhost:8000/agents/technical/MSFT?fresh=true
+NewsAgent        http://localhost:8000/agents/news/MSFT?fresh=true
+RiskAgent        http://localhost:8000/agents/risk/MSFT?fresh=true
+Gateway Swagger  http://localhost:3000/api/docs
+Backend Swagger  http://localhost:8000/docs
+```
+
+Le dernier travail effectue concerne `RiskAgent` :
+
+- correction du prompt SLM pour forcer les scores en `/100` et pas en `/10` ;
+- ajout de `data_confidence_score` ;
+- ajout de `data_confidence_level` ;
+- ajout de risques `data_quality` pour les quotas API, sources partielles et NewsAgent partiel ;
+- sauvegarde de la confiance des donnees dans le knowledge graph.
+
 ## Objectif du projet
 
 L'objectif est de construire une application capable de produire une analyse complete d'une action boursiere a partir de plusieurs sources de donnees.
@@ -78,6 +121,7 @@ GET /api/health
 GET /api/stocks/{ticker}/market-data
 GET /api/stocks/{ticker}/technical
 GET /api/stocks/{ticker}/news
+GET /api/stocks/{ticker}/risk
 GET /api/stocks/{ticker}/evaluation
 GET /api/stocks/{ticker}/technical/evaluation
 GET /api/stocks/{ticker}/news/evaluation
@@ -95,6 +139,9 @@ Role des endpoints :
 
 - `/api/health` : verifier que le gateway fonctionne ;
 - `/api/stocks/{ticker}/market-data` : tester `MarketDataAgent` seul ;
+- `/api/stocks/{ticker}/technical` : tester `TechnicalAgent` seul ;
+- `/api/stocks/{ticker}/news` : tester `NewsAgent` seul ;
+- `/api/stocks/{ticker}/risk` : tester `RiskAgent` seul ;
 - `/api/stocks/{ticker}/analyze` : analyse simplifiee compatible avec l'UI actuelle ;
 - `/api/stocks/market/dashboard` : donnees du dashboard marche.
 
@@ -155,9 +202,15 @@ Sources utilisees :
 
 - `twelve_data` : prix live ;
 - `yfinance` : historique, profil et complement de donnees ;
+- `tiingo` : historique EOD fiable (fallback sans quota serre, si `TIINGO_API_KEY`) ;
 - `alpha_vantage` : profil, ratios et fondamentaux ;
 - `financial_modeling_prep` : etats financiers fiables ;
 - `fallback` : uniquement secours interne, indique par `used_fallback`.
+
+Ordre de collecte de l'historique : `yfinance` -> `tiingo` -> `twelve_data`.
+yfinance etant frequemment rate-limited, Tiingo (quota genereux) prend le relais
+avant Twelve Data et fiabilise `historical_prices` (donc le TechnicalAgent et la
+`data_confidence_score` du RiskAgent).
 
 Endpoint de validation direct :
 
@@ -211,7 +264,7 @@ financial_statements_summary:
 
 ### 6. SLM via Nebius Token Factory
 
-Nous utilisons un SLM optionnel pour `MarketDataAgent`, servi par Nebius Token Factory (API compatible OpenAI).
+Nous utilisons un SLM optionnel pour les agents, servi par Nebius Token Factory (API compatible OpenAI).
 
 Modele utilise (economique, adapte au JSON structure) :
 
@@ -226,6 +279,7 @@ Role du SLM :
 - resumer la qualite des donnees ;
 - lister les points importants ;
 - signaler les limites.
+- pour `RiskAgent`, expliquer le diagnostic sans recalculer les scores.
 
 Le SLM ne fait pas :
 
@@ -321,30 +375,213 @@ http://localhost:3000/api/stocks/MSFT/technical
 ### 9. Evaluation qualite des agents + page UI
 
 Un module d'evaluation (`app/agents/evaluation.py`) mesure la qualite des
-deux agents, avec 11 metriques chacun :
+quatre agents :
 
-- **MarketDataAgent** : disponibilite, validite du statut, couverture des
-  sources, absence de fallback, completude prix / historique / profil /
-  ratios / etats financiers, erreurs maitrisees, resume SLM.
-- **TechnicalAgent** : disponibilite, validite du statut, couverture des
-  sources, RSI, moyennes mobiles (SMA 20/50), volatilite, niveaux
-  support/resistance, analyse des volumes, validite score+signal, erreurs
-  maitrisees, resume SLM.
+- **MarketDataAgent** (11 metriques) : disponibilite, validite du statut,
+  couverture des sources, absence de fallback, completude prix / historique /
+  profil / ratios / etats financiers, erreurs maitrisees, resume SLM.
+- **TechnicalAgent** (11 metriques) : disponibilite, validite du statut,
+  couverture des sources, RSI, moyennes mobiles (SMA 20/50), volatilite,
+  niveaux support/resistance, analyse des volumes, validite score+signal,
+  erreurs maitrisees, resume SLM.
+- **NewsAgent** (11 metriques) : disponibilite, validite du statut, couverture
+  des sources, nombre d'articles, fraicheur, resumes, sentiment global,
+  sentiment par article, evenements, erreurs maitrisees, resume SLM.
+- **RiskAgent** (12 metriques) : disponibilite, validite du statut, couverture
+  des agents amont, coherence score/niveau de risque, **purete du risk_score**
+  (les problemes de qualite des donnees n'entrent pas dans le risque),
+  coherence de la confiance, **dimension news active** (le sentiment est bien
+  exploite), preuves des risques, risques explicables, confiance justifiee,
+  erreurs maitrisees, resume SLM.
 
 Chaque metrique renvoie `name`, `score` (0-1), `passed`, `message` ;
 l'agregat donne `total_score` (0-100), `grade` (`excellent` / `good` /
 `partial` / `poor`) et `passed`.
 
-- Harnais CLI : `python ai-backend/eval_agent.py` (rapport console + JSON) ;
+- Harnais CLI : `python ai-backend/eval_agent.py` (MarketDataAgent par defaut,
+  `--agent {market-data,technical,news,risk}` pour les autres) ;
 - Endpoints : `GET /agents/market-data/{ticker}/evaluation`,
-  `GET /agents/technical/{ticker}/evaluation` et
-  `GET /agents/news/{ticker}/evaluation` ;
+  `GET /agents/technical/{ticker}/evaluation`,
+  `GET /agents/news/{ticker}/evaluation` et
+  `GET /agents/risk/{ticker}/evaluation` ;
 - UI : onglet **Dashboard** du frontend = page "Metriques des agents",
-  avec un selecteur d'agent (MarketDataAgent / TechnicalAgent / NewsAgent)
-  et un selecteur de ticker.
+  avec un selecteur d'agent (MarketDataAgent / TechnicalAgent / NewsAgent /
+  RiskAgent) et un selecteur de ticker.
 
 Dernier resultat mesure (MarketDataAgent) : score moyen 94.1/100, grade
 `excellent`, 11/11 PASS.
+
+### 10. RiskAgent (fait)
+
+`RiskAgent` combine les sorties des agents deja valides :
+
+```txt
+MarketDataAgent + TechnicalAgent + NewsAgent
+        v
+RiskAgent
+```
+
+Il produit :
+
+```txt
+ticker
+status
+overall_risk_level
+risk_score
+risk_score_breakdown
+data_confidence_score
+data_confidence_level
+risks
+component_status
+warnings
+errors
+slm_summary
+```
+
+Important :
+
+- `risk_score` mesure le risque detecte sur le titre, sur une echelle `0-100` ;
+- il est **pondere par categorie** (`app/agents/risk_scoring.py`) : chaque
+  categorie a une contribution maximale (fondamental 30, technique 25, news 25,
+  marche 20) et sature au-dela de quelques risques serieux, ce qui evite qu'une
+  pluie de petits risques ne domine le diagnostic ;
+- `risk_score_breakdown` detaille la contribution de chaque categorie ;
+- `data_confidence_score` mesure la fiabilite des donnees utilisees, aussi sur `0-100` ;
+- un titre peut avoir un `risk_score` faible mais une `data_confidence_score` faible si les sources sont limitees ;
+- le SLM Qwen resume le diagnostic mais ne recalcule pas les scores.
+
+Risques detectes actuellement :
+
+- risque technique : volatilite, tendance, RSI, score technique faible ;
+- risque fondamental : valorisation, dette, cash-flow operationnel negatif ;
+- risque news : sentiment negatif ou mixte ;
+- risque `data_quality` : source partielle, API rate-limited, news partielles, source externe indisponible.
+
+Deux invariants de conception (corriges et verrouilles par l'evaluation) :
+
+- **le `risk_score` ne mesure que le risque intrinseque du titre** (marche,
+  technique, fondamental, news). Les risques `data_quality` restent listes pour
+  la transparence mais ne gonflent plus le score : ils reduisent uniquement le
+  `data_confidence_score`. Sinon un titre sain servi pendant un rate-limit de
+  source secondaire serait faussement classe plus risque ;
+- **le sentiment news est reellement calcule** dans le diagnostic (le NewsAgent
+  est appele avec le SLM actif). Sans lui, `sentiment_label` restait vide, la
+  dimension "risque news" ne se declenchait jamais et le NewsAgent etait fige en
+  `partial`, penalisant a tort la confiance.
+
+Endpoints :
+
+```txt
+http://localhost:8000/agents/risk/MSFT?fresh=true
+http://localhost:8000/agents/risk/MSFT/evaluation
+http://localhost:8000/agents/risk/MSFT/memory
+http://localhost:3000/api/stocks/MSFT/risk
+http://localhost:3000/api/stocks/MSFT/risk/evaluation
+```
+
+Exemple d'interpretation :
+
+```txt
+risk_score: 30/100
+overall_risk_level: low
+data_confidence_score: 38/100
+data_confidence_level: low
+```
+
+Cela signifie : le risque detecte est faible, mais la confiance dans les donnees est faible a cause des sources partielles ou limitees.
+
+## Obstacles actuels
+
+Les principaux obstacles ne viennent pas du code des agents, mais surtout de la qualite et de la disponibilite des sources externes.
+
+### 1. yfinance est instable
+
+`yfinance` est utile en developpement, mais il est souvent limite par Yahoo :
+
+```txt
+Too Many Requests
+Rate limited
+```
+
+Impact :
+
+- historique parfois indisponible ;
+- profil entreprise parfois indisponible ;
+- warnings frequents dans `MarketDataAgent`, `TechnicalAgent` et `RiskAgent`.
+
+Decision :
+
+- garder `yfinance` comme source secondaire ;
+- ne pas en faire la source principale de fiabilite.
+
+### 2. Quotas Alpha Vantage
+
+Alpha Vantage est utile pour les fondamentaux, mais le plan gratuit est limite.
+
+Impact :
+
+- certains endpoints deviennent temporairement indisponibles ;
+- `financial_statements_summary` peut etre partiel ;
+- `data_confidence_score` baisse quand les quotas sont atteints.
+
+### 3. Financial Modeling Prep bloque certaines routes selon le plan
+
+FMP est tres utile pour les fondamentaux, mais certaines routes, notamment les news, peuvent etre bloquees selon l'abonnement.
+
+Impact :
+
+- `FMP news unavailable` ;
+- `NewsAgent` peut rester `partial` ;
+- `RiskAgent` ajoute un risque `data_quality`.
+
+### 4. Les donnees news ne sont pas toutes institutionnelles
+
+Nous utilisons plusieurs sources de news :
+
+- Yahoo RSS ;
+- Finnhub ;
+- Google News RSS ;
+- NewsData.io ;
+- FMP si disponible.
+
+Impact :
+
+- bonne couverture pour MVP ;
+- fiabilite variable selon les articles ;
+- besoin de RAG/SEC EDGAR plus tard pour les sources officielles.
+
+### 5. Le frontend ne montre pas encore tout
+
+Le frontend existe et affiche une interface salle des marches, mais les sorties avancees des agents ne sont pas encore toutes integrees visuellement.
+
+Actuellement, la validation la plus claire se fait via :
+
+```txt
+http://localhost:8000/docs
+http://localhost:3000/api/docs
+```
+
+### 6. Le projet n'a pas encore d'orchestrateur final
+
+Les agents sont testables separement, mais il manque encore :
+
+- `RAGAgent` ;
+- `SynthesisAgent` ;
+- orchestration LangGraph ;
+- workflow complet qui decide automatiquement quels agents appeler.
+
+### 7. Fiabilite a ameliorer
+
+Pour augmenter `data_confidence_score`, les prochaines ameliorations recommandees sont :
+
+1. ajouter un cache SQLite plus strategique par type de donnee ;
+2. source historique stable **Tiingo** (FAIT) : integree comme fallback entre
+   yfinance et Twelve Data (`TIINGO_API_KEY`, quota genereux). Note : Stooq,
+   d'abord envisage, protege desormais son export CSV par un challenge anti-bot
+   et n'est plus exploitable en direct ;
+3. utiliser SEC EDGAR pour les fondamentaux officiels US ;
+4. garder Twelve Data/Finnhub comme sources principales de prix/news ;
+5. ajouter une logique de consensus entre sources.
 
 ## Configuration locale
 
@@ -356,6 +593,7 @@ Ne jamais mettre les vraies cles API dans Git.
 TWELVE_DATA_API_KEY=your_twelve_data_api_key_here
 ALPHA_VANTAGE_API_KEY=your_alpha_vantage_api_key_here
 FMP_API_KEY=your_financial_modeling_prep_api_key_here
+TIINGO_API_KEY=your_tiingo_api_key_here
 
 NEBIUS_API_KEY=your_nebius_api_key_here
 NEBIUS_ENABLED=true
@@ -363,7 +601,7 @@ NEBIUS_BASE_URL=https://api.studio.nebius.com/v1
 NEBIUS_MODEL=Qwen/Qwen3-30B-A3B-Instruct-2507
 ```
 
-Le SLM s'active automatiquement des que `NEBIUS_API_KEY` est renseignee (et `NEBIUS_ENABLED` different de `false`). Tous les agents (MarketData, Technical, News) utilisent `NEBIUS_MODEL`.
+Le SLM s'active automatiquement des que `NEBIUS_API_KEY` est renseignee (et `NEBIUS_ENABLED` different de `false`). Les agents `MarketDataAgent`, `TechnicalAgent`, `NewsAgent` et `RiskAgent` utilisent `NEBIUS_MODEL`.
 
 Remarque : selon le compte, la base URL peut etre `https://api.studio.nebius.com/v1` ou `https://api.tokenfactory.nebius.com/v1`. Ajuster `NEBIUS_BASE_URL` si besoin.
 
@@ -519,7 +757,31 @@ Endpoints :
 
 Note : si la cle FMP n'a pas acces aux news (plan gratuit), l'agent fonctionne sur Yahoo RSS + Finnhub + Google News RSS + NewsData.io (warnings non bloquants). Cles dans le `.env` racine : `FINNHUB_API_KEY`, `NEWSDATA_API_KEY` (alternative Google News, format `pub_...`).
 
-### Etape 4 - RAGAgent
+### Etape 4 - RiskAgent
+
+Statut : fait.
+
+Role :
+
+- combiner `MarketDataAgent`, `TechnicalAgent` et `NewsAgent` ;
+- identifier risques marche, techniques, fondamentaux, news et qualite des donnees ;
+- produire `risk_score` sur 100 ;
+- produire `data_confidence_score` sur 100 ;
+- produire un resume SLM sans recalculer les chiffres.
+
+Sortie actuelle :
+
+```txt
+risk_score
+overall_risk_level
+data_confidence_score
+data_confidence_level
+risks
+component_status
+slm_summary
+```
+
+### Etape 5 - RAGAgent
 
 Role :
 
@@ -550,25 +812,6 @@ Technologies possibles :
 - LangChain ou LlamaIndex ;
 - ChromaDB, FAISS ou Qdrant ;
 - embeddings locaux ou OpenAI embeddings.
-
-### Etape 5 - RiskAgent
-
-Role :
-
-- identifier risques financiers ;
-- identifier risques sectoriels ;
-- analyser volatilite ;
-- utiliser news et RAG ;
-- produire niveau de risque.
-
-Sortie attendue :
-
-```txt
-risk_score
-risk_level
-main_risks
-risk_explanation
-```
 
 ### Etape 6 - SynthesisAgent
 
@@ -717,15 +960,16 @@ classees par priorite.
 |---|---|---|---|
 | **Finnhub** | Oui (60 req/min) | Quotes temps reel, fondamentaux, news par ticker, sentiment | Integre : source news du NewsAgent (company-news, 7 derniers jours) |
 | **SEC EDGAR** | Oui (illimite) | Etats financiers officiels US (10-K, 10-Q), source de verite | Haute : fiabilise les fondamentaux + alimente le RAGAgent |
-| **Tiingo** | Oui (genereux) | Historique EOD long (30+ ans), news | Moyenne : renforce l'historique |
-| **Stooq** | Oui (sans cle) | Historique EOD en CSV, aucun quota | Moyenne : fallback historique gratuit ideal |
-| **FRED (Fed St. Louis)** | Oui | Donnees macro (taux, inflation, chomage) | Moyenne : indispensable pour le futur RiskAgent |
+| **Tiingo** | Oui (genereux) | Historique EOD long (30+ ans), news | Integre : fallback historique entre yfinance et Twelve Data (`TIINGO_API_KEY`) |
+| **Stooq** | Oui (sans cle) | Historique EOD en CSV | Abandonne : l'export CSV est desormais protege par un challenge anti-bot |
+| **FRED (Fed St. Louis)** | Oui | Donnees macro (taux, inflation, chomage) | Moyenne : utile pour enrichir le RiskAgent avance |
 | **GDELT** | Oui | Evenements mondiaux, tonalite media | Basse : NewsAgent avance |
 | **Polygon.io** | Non (payant) | Donnees intraday/tick de qualite institutionnelle | Basse : seulement si besoin intraday serieux |
 
 Remplacement a considerer : **yfinance est le maillon faible** (rate-limit
-permanent, scraping non officiel). Finnhub + Stooq couvrent ensemble ce que
-yfinance apporte (profil + historique), avec de vraies APIs et des quotas connus.
+permanent, scraping non officiel). Tiingo (historique) + Finnhub (profil, quotes,
+news) couvrent ensemble ce que yfinance apporte, avec de vraies APIs et des
+quotas connus.
 
 ### Idees d'evolution des fonctionnalites
 
@@ -774,7 +1018,7 @@ Raccourcis populaires pour les metriques : AAPL, MSFT, NVDA, TSLA, GOOGL, AMZN, 
 
 ## Decision actuelle
 
-`MarketDataAgent`, `TechnicalAgent` et `NewsAgent` sont valides (SLM + memoire + evaluation).
+`MarketDataAgent`, `TechnicalAgent`, `NewsAgent` et `RiskAgent` sont valides.
 
 La prochaine etape logique est :
 
@@ -782,4 +1026,4 @@ La prochaine etape logique est :
 Implementer RAGAgent (documents financiers)
 ```
 
-Il beneficiera du knowledge graph commun deja alimente par les trois premiers agents.
+Il beneficiera du knowledge graph commun deja alimente par les agents precedents.

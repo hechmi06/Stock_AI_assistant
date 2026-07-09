@@ -33,6 +33,8 @@ _FUNCTIONAL_PREDICATES = {
     "has_news_sentiment_score",
     "has_overall_risk_level",
     "has_risk_score",
+    "has_data_confidence_score",
+    "has_data_confidence_level",
 }
 
 _SCHEMA = """
@@ -145,6 +147,8 @@ class KnowledgeGraph:
 
         self.add_fact(ticker, "has_overall_risk_level", result.overall_risk_level)
         self.add_fact(ticker, "has_risk_score", str(result.risk_score))
+        self.add_fact(ticker, "has_data_confidence_score", str(result.data_confidence_score))
+        self.add_fact(ticker, "has_data_confidence_level", result.data_confidence_level)
         for risk in result.risks:
             risk_id = f"{ticker}:{risk.category}:{risk.title}"
             self.add_fact(ticker, "has_risk", risk_id)

@@ -117,3 +117,14 @@ export async function fetchNewsEvaluation(ticker: string): Promise<EvaluationRep
 
   return await response.json();
 }
+
+export async function fetchRiskEvaluation(ticker: string): Promise<EvaluationReport> {
+  const normalizedTicker = ticker.trim().toUpperCase();
+  const response = await fetch(`/api/stocks/${normalizedTicker}/risk/evaluation`);
+
+  if (!response.ok) {
+    throw new Error(`Gateway returned ${response.status}`);
+  }
+
+  return await response.json();
+}

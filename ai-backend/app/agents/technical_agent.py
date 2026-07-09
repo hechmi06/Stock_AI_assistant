@@ -39,7 +39,13 @@ class TechnicalAgent:
         self.slm_client = slm_client or NebiusClient()
         self.memory = memory or TechnicalAgentMemory()
 
-    def run(self, ticker: str, period: str = "6mo", use_cache: bool = True) -> TechnicalResult:
+    def run(
+        self,
+        ticker: str,
+        period: str = "6mo",
+        use_cache: bool = True,
+        with_slm: bool = True,
+    ) -> TechnicalResult:
         normalized_ticker = ticker.strip().upper()
         if not normalized_ticker:
             return TechnicalResult(ticker="", status="failed", errors=["Ticker is required."])
@@ -96,7 +102,8 @@ class TechnicalAgent:
             errors=errors,
         )
 
-        self._add_slm_summary(result)
+        if with_slm:
+            self._add_slm_summary(result)
         self.memory.remember(result)
         return result
 

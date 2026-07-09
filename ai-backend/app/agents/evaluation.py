@@ -14,7 +14,8 @@ from pydantic import BaseModel, Field
 
 from datetime import datetime, timezone
 
-from .schemas import MarketDataResult, NewsResult, TechnicalResult
+from .risk_scoring import compute_risk_score
+from .schemas import MarketDataResult, NewsResult, RiskResult, TechnicalResult
 
 Grade = Literal["excellent", "good", "partial", "poor"]
 
@@ -621,6 +622,301 @@ def evaluate_news(result: NewsResult) -> EvaluationReport:
         _news_key_events(result),
         _news_controlled_errors(result),
         _news_slm_summary(result),
+    ]
+
+    return _build_report(result.ticker, metrics)
+
+
+# ---------------------------------------------------------------------------
+# Evaluation du RiskAgent
+# ---------------------------------------------------------------------------
+#
+# Le RiskAgent ne collecte pas de donnees : il agrege 3 agents amont et applique
+# des regles. On evalue donc la coherence du diagnostic et sa tracabilite, pas
+# une exactitude de prediction. Deux metriques verrouillent des invariants de
+# conception issus de corrections passees :
+#   - risk_score_purity : le risk_score ne doit refleter que le risque
+#     intrinseque du titre, jamais les problemes de qualite des donnees ;
+#   - news_dimension_active : le sentiment news (coeur du risque news) doit etre
+#     reellement pris en compte, pas neutralise par un SLM desactive.
+
+# Seuils repris de RiskAgent pour verifier la coherence score <-> niveau.
+RISK_LEVEL_HIGH_MIN = 61
+RISK_LEVEL_MEDIUM_MIN = 31
+CONFIDENCE_LEVEL_HIGH_MIN = 80
+CONFIDENCE_LEVEL_MEDIUM_MIN = 55
+
+_COMPONENT_HEALTH = {"success": 1.0, "partial": 0.5, "failed": 0.0}
+
+
+def _risk_agent_availability(result: RiskResult) -> MetricResult:
+    ok = result.status != "failed"
+    return MetricResult(
+        name="agent_availability",
+        score=1.0 if ok else 0.0,
+        passed=ok,
+        message=(
+            "Agent operationnel, diagnostic exploitable."
+            if ok
+            else "Diagnostic en echec (status=failed)."
+        ),
+    )
+
+
+def _risk_status_validity(result: RiskResult) -> MetricResult:
+    snapshot = result.component_status
+    statuses = [snapshot.market_data_status, snapshot.technical_status, snapshot.news_status]
+    all_failed = all(status == "failed" for status in statuses)
+    # Le RiskAgent ne doit etre 'failed' que si tous les agents amont ont echoue.
+    coherent = (result.status == "failed") == all_failed
+    if result.status == "success":
+        score = 1.0
+    elif result.status == "partial":
+        score = 0.7
+    else:
+        score = 0.0
+    if not coherent:
+        score *= 0.5
+    return MetricResult(
+        name="status_validity",
+        score=_clamp01(score),
+        passed=coherent and result.status != "failed",
+        message=f"Statut '{result.status}' {'coherent' if coherent else 'incoherent'} avec les agents amont.",
+    )
+
+
+def _risk_component_coverage(result: RiskResult) -> MetricResult:
+    snapshot = result.component_status
+    statuses = [snapshot.market_data_status, snapshot.technical_status, snapshot.news_status]
+    score = sum(_COMPONENT_HEALTH.get(status, 0.0) for status in statuses) / len(statuses)
+    healthy = sum(1 for status in statuses if status == "success")
+    return MetricResult(
+        name="component_coverage",
+        score=_clamp01(score),
+        passed=score >= 0.5,
+        message=(
+            f"{healthy}/3 agents amont en succes "
+            f"(market={snapshot.market_data_status}, technical={snapshot.technical_status}, "
+            f"news={snapshot.news_status})."
+        ),
+    )
+
+
+def _risk_score_validity(result: RiskResult) -> MetricResult:
+    in_range = 0 <= result.risk_score <= 100
+    if result.risk_score >= RISK_LEVEL_HIGH_MIN:
+        expected = "high"
+    elif result.risk_score >= RISK_LEVEL_MEDIUM_MIN:
+        expected = "medium"
+    else:
+        expected = "low"
+    coherent = result.overall_risk_level == expected
+    ok = in_range and coherent
+    return MetricResult(
+        name="risk_score_validity",
+        score=1.0 if ok else (0.5 if in_range else 0.0),
+        passed=ok,
+        message=(
+            f"risk_score={result.risk_score}/100 coherent avec niveau '{result.overall_risk_level}'."
+            if ok
+            else f"risk_score={result.risk_score}/100 incoherent (niveau attendu '{expected}', "
+            f"obtenu '{result.overall_risk_level}')."
+        ),
+    )
+
+
+def _risk_score_purity(result: RiskResult) -> MetricResult:
+    """Invariant : les risques data_quality n'entrent pas dans le risk_score.
+
+    Verification independante de la formule : on recalcule le score officiel
+    (doit correspondre au score publie) et on verifie que retirer les risques
+    data_quality ne change rien (ils sont donc bien inertes sur le risque).
+    """
+    expected = compute_risk_score(result.risks)
+    without_dq = [risk for risk in result.risks if risk.category != "data_quality"]
+    inert = compute_risk_score(without_dq) == expected
+    dq_count = len(result.risks) - len(without_dq)
+    ok = result.risk_score == expected and inert
+    return MetricResult(
+        name="risk_score_purity",
+        score=1.0 if ok else 0.0,
+        passed=ok,
+        message=(
+            f"risk_score={result.risk_score} reflete le risque intrinseque ; "
+            f"{dq_count} risque(s) data_quality sans effet sur le score."
+            if ok
+            else f"risk_score={result.risk_score} incoherent (attendu {expected}) "
+            f"ou pollue par {dq_count} risque(s) data_quality."
+        ),
+    )
+
+
+def _risk_confidence_validity(result: RiskResult) -> MetricResult:
+    in_range = 0 <= result.data_confidence_score <= 100
+    if result.data_confidence_score >= CONFIDENCE_LEVEL_HIGH_MIN:
+        expected = "high"
+    elif result.data_confidence_score >= CONFIDENCE_LEVEL_MEDIUM_MIN:
+        expected = "medium"
+    else:
+        expected = "low"
+    coherent = result.data_confidence_level == expected
+    ok = in_range and coherent
+    return MetricResult(
+        name="confidence_score_validity",
+        score=1.0 if ok else (0.5 if in_range else 0.0),
+        passed=ok,
+        message=(
+            f"data_confidence_score={result.data_confidence_score}/100 coherent avec "
+            f"niveau '{result.data_confidence_level}'."
+            if ok
+            else f"data_confidence_score={result.data_confidence_score}/100 incoherent "
+            f"(attendu '{expected}', obtenu '{result.data_confidence_level}')."
+        ),
+    )
+
+
+def _risk_news_dimension_active(result: RiskResult) -> MetricResult:
+    """Le risque news doit etre reellement evalue, pas neutralise.
+
+    Si NewsAgent a echoue, la dimension est absente pour une raison legitime
+    (score partiel). Mais si news != failed, on attend un sentiment exploite :
+    soit un risque de categorie 'news', soit un statut news 'success' (sentiment
+    calcule et non risque, ce qui est un resultat valide).
+    """
+    news_status = result.component_status.news_status
+    if news_status == "failed":
+        return MetricResult(
+            name="news_dimension_active",
+            score=0.0,
+            passed=False,
+            message="NewsAgent en echec : dimension news indisponible pour le risque.",
+        )
+    has_news_risk = any(risk.category == "news" for risk in result.risks)
+    sentiment_used = news_status == "success" or has_news_risk
+    return MetricResult(
+        name="news_dimension_active",
+        score=1.0 if sentiment_used else 0.4,
+        passed=sentiment_used,
+        message=(
+            "Sentiment news pris en compte dans le risque."
+            if sentiment_used
+            else "NewsAgent 'partial' sans sentiment : dimension news probablement neutralisee."
+        ),
+    )
+
+
+def _risk_evidence_coverage(result: RiskResult) -> MetricResult:
+    total = len(result.risks)
+    if total == 0:
+        return MetricResult(
+            name="evidence_coverage",
+            score=1.0,
+            passed=True,
+            message="Aucun risque detecte : rien a justifier.",
+        )
+    with_evidence = sum(1 for risk in result.risks if risk.evidence)
+    ratio = with_evidence / total
+    return MetricResult(
+        name="evidence_coverage",
+        score=_clamp01(ratio),
+        passed=ratio >= 0.9,
+        message=f"{with_evidence}/{total} risque(s) avec preuve chiffree.",
+    )
+
+
+def _risk_explainability(result: RiskResult) -> MetricResult:
+    total = len(result.risks)
+    if total == 0:
+        return MetricResult(
+            name="risk_explainability",
+            score=1.0,
+            passed=True,
+            message="Aucun risque a expliquer.",
+        )
+    explained = sum(1 for risk in result.risks if risk.title and risk.description)
+    ratio = explained / total
+    return MetricResult(
+        name="risk_explainability",
+        score=_clamp01(ratio),
+        passed=ratio >= 0.9,
+        message=f"{explained}/{total} risque(s) avec titre + description.",
+    )
+
+
+def _risk_confidence_explained(result: RiskResult) -> MetricResult:
+    """Transparence : une confiance degradee doit etre justifiee.
+
+    Si la confiance n'est pas 'high', on attend au moins un risque data_quality
+    ou un avertissement expliquant pourquoi les donnees sont limitees.
+    """
+    if result.data_confidence_level == "high":
+        return MetricResult(
+            name="confidence_explained",
+            score=1.0,
+            passed=True,
+            message="Confiance elevee : aucune justification requise.",
+        )
+    has_dq_risk = any(risk.category == "data_quality" for risk in result.risks)
+    explained = has_dq_risk or bool(result.warnings)
+    return MetricResult(
+        name="confidence_explained",
+        score=1.0 if explained else 0.0,
+        passed=explained,
+        message=(
+            f"Confiance '{result.data_confidence_level}' justifiee "
+            f"(risque data_quality ou avertissement present)."
+            if explained
+            else f"Confiance '{result.data_confidence_level}' non justifiee : "
+            "aucun risque data_quality ni avertissement."
+        ),
+    )
+
+
+def _risk_controlled_errors(result: RiskResult) -> MetricResult:
+    count = len(result.errors)
+    warn_count = len(result.warnings)
+    score = _clamp01(1.0 - count / ERROR_SCALE)
+    if count == 0:
+        message = f"Aucune erreur fatale ({warn_count} avertissement(s) non bloquant(s))."
+    else:
+        message = f"{count} erreur(s) fatale(s), {warn_count} avertissement(s)."
+    return MetricResult(
+        name="controlled_errors",
+        score=score,
+        passed=count <= ERROR_MAX_PASS,
+        message=message,
+    )
+
+
+def _risk_slm_summary(result: RiskResult) -> MetricResult:
+    summary = result.slm_summary
+    ok = summary is not None
+    message = (
+        f"Resume SLM present (qualite: {summary.data_quality})." if ok else "Resume SLM absent."
+    )
+    return MetricResult(
+        name="slm_summary_availability",
+        score=1.0 if ok else 0.0,
+        passed=ok,
+        message=message,
+    )
+
+
+def evaluate_risk(result: RiskResult) -> EvaluationReport:
+    """Evalue un resultat de RiskAgent et renvoie un rapport complet."""
+    metrics = [
+        _risk_agent_availability(result),
+        _risk_status_validity(result),
+        _risk_component_coverage(result),
+        _risk_score_validity(result),
+        _risk_score_purity(result),
+        _risk_confidence_validity(result),
+        _risk_news_dimension_active(result),
+        _risk_evidence_coverage(result),
+        _risk_explainability(result),
+        _risk_confidence_explained(result),
+        _risk_controlled_errors(result),
+        _risk_slm_summary(result),
     ]
 
     return _build_report(result.ticker, metrics)

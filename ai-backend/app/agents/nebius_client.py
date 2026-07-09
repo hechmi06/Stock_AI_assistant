@@ -58,6 +58,11 @@ class NebiusClient:
             self._technical_system_prompt(), self._build_technical_prompt(payload)
         )
 
+    def summarize_risk_data(self, payload: dict[str, Any]) -> dict[str, Any] | None:
+        if not self.is_enabled():
+            return None
+        return self._complete_json(self._risk_system_prompt(), self._build_risk_prompt(payload))
+
     def analyze_news(self, payload: dict[str, Any]) -> dict[str, Any] | None:
         """Analyse de sentiment des news : un seul appel batch pour tous les articles.
 
@@ -200,6 +205,25 @@ class NebiusClient:
             "}"
         )
 
+    def _risk_system_prompt(self) -> str:
+        return (
+            "Tu es un SLM de controle qualite pour un agent de risque boursier.\n"
+            "Les risques, le score et le niveau global sont deja calcules par des regles deterministes :\n"
+            "tu ne recalcules rien, tu n'inventes aucun chiffre et tu ne donnes pas de recommandation d'achat/vente.\n"
+            "IMPORTANT: risk_score est une echelle 0-100, jamais 0-10. Si risk_score vaut 7, ecris 7/100.\n"
+            "data_confidence_score est aussi une echelle 0-100 et mesure la fiabilite des donnees, pas le risque du titre.\n"
+            "Ne transforme jamais un score fourni en /10.\n"
+            "Ton role : resumer le diagnostic de risque, expliquer les principaux facteurs et signaler les limites\n"
+            "liees aux donnees amont. Si le risque vient surtout de data_quality, dis-le explicitement.\n"
+            "Reponds uniquement en JSON valide avec exactement ces champs:\n"
+            "{\n"
+            '  "summary": "resume court en francais",\n'
+            '  "data_quality": "excellent | bon | partiel | faible",\n'
+            '  "key_points": ["point 1", "point 2", "point 3"],\n'
+            '  "warnings": ["limite importante"]\n'
+            "}"
+        )
+
     def _build_news_prompt(self, payload: dict[str, Any]) -> str:
         articles = payload.get("articles") or []
         compact_articles = [
@@ -218,6 +242,36 @@ class NebiusClient:
             "articles": compact_articles,
         }
         return f"ACTUALITES:\n{json.dumps(compact_payload, ensure_ascii=True)}"
+
+    def _build_risk_prompt(self, payload: dict[str, Any]) -> str:
+        risks = payload.get("risks") or []
+        compact_risks = [
+            {
+                "category": risk.get("category"),
+                "level": risk.get("level"),
+                "title": risk.get("title"),
+                "evidence": risk.get("evidence"),
+                "score_impact": risk.get("score_impact"),
+            }
+            for risk in risks[:10]
+            if isinstance(risk, dict)
+        ]
+        compact_payload = {
+            "ticker": payload.get("ticker"),
+            "status": payload.get("status"),
+            "overall_risk_level": payload.get("overall_risk_level"),
+            "risk_score": payload.get("risk_score"),
+            "risk_score_scale": "0-100",
+            "risk_score_breakdown": payload.get("risk_score_breakdown"),
+            "data_confidence_score": payload.get("data_confidence_score"),
+            "data_confidence_level": payload.get("data_confidence_level"),
+            "data_confidence_scale": "0-100",
+            "risks": compact_risks,
+            "component_status": payload.get("component_status"),
+            "warnings": (payload.get("warnings") or [])[:8],
+            "errors": payload.get("errors"),
+        }
+        return f"DIAGNOSTIC_RISQUE:\n{json.dumps(compact_payload, ensure_ascii=True)}"
 
     def _build_technical_prompt(self, payload: dict[str, Any]) -> str:
         compact_payload = {

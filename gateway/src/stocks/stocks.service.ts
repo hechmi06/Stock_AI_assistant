@@ -165,6 +165,8 @@ type RiskResult = {
   status: "success" | "partial" | "failed";
   overall_risk_level: "low" | "medium" | "high";
   risk_score: number;
+  data_confidence_score: number;
+  data_confidence_level: "low" | "medium" | "high";
   risks: Array<{
     category: "market" | "technical" | "fundamental" | "news" | "data_quality";
     level: "low" | "medium" | "high";
@@ -429,6 +431,8 @@ export class StocksService {
         status: "failed",
         overall_risk_level: "high",
         risk_score: 100,
+        data_confidence_score: 0,
+        data_confidence_level: "low",
         risks: [],
         component_status: {
           market_data_status: "failed",
@@ -457,9 +461,13 @@ export class StocksService {
     return this.fetchEvaluation(ticker, "news");
   }
 
+  async getRiskEvaluation(ticker: string): Promise<EvaluationReport> {
+    return this.fetchEvaluation(ticker, "risk");
+  }
+
   private async fetchEvaluation(
     ticker: string,
-    agent: "market-data" | "technical" | "news",
+    agent: "market-data" | "technical" | "news" | "risk",
   ): Promise<EvaluationReport> {
     const normalizedTicker = ticker.trim().toUpperCase();
 
