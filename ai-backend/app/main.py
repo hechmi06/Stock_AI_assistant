@@ -20,6 +20,7 @@ from app.agents.evaluation import (
     EvaluationReport,
     evaluate_market_data,
     evaluate_news,
+    evaluate_risk,
     evaluate_technical,
 )
 
@@ -367,6 +368,13 @@ def get_news_memory(ticker: str) -> dict[str, object]:
 def run_risk_agent(ticker: str, fresh: bool = False) -> RiskResult:
     """Diagnostic de risque via MarketDataAgent + TechnicalAgent + NewsAgent."""
     return risk_agent.run(ticker, use_cache=not fresh)
+
+
+@app.get("/agents/risk/{ticker}/evaluation", response_model=EvaluationReport)
+def evaluate_risk_agent(ticker: str, fresh: bool = False) -> EvaluationReport:
+    """Evaluation qualite du RiskAgent (coherence du diagnostic et tracabilite)."""
+    result = risk_agent.run(ticker, use_cache=not fresh)
+    return evaluate_risk(result)
 
 
 @app.get("/agents/risk/{ticker}/memory")

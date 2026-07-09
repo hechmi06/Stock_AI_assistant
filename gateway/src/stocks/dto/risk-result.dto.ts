@@ -73,6 +73,20 @@ export class RiskResultDto {
   @ApiProperty({ minimum: 0, maximum: 100 })
   risk_score!: number;
 
+  @ApiProperty({
+    type: "object",
+    additionalProperties: { type: "number" },
+    description: "Contribution de chaque categorie au risk_score (market, technical, fundamental, news).",
+    example: { fundamental: 16, technical: 24, news: 22, market: 12 },
+  })
+  risk_score_breakdown!: Record<string, number>;
+
+  @ApiProperty({ minimum: 0, maximum: 100 })
+  data_confidence_score!: number;
+
+  @ApiProperty({ enum: ["low", "medium", "high"] })
+  data_confidence_level!: "low" | "medium" | "high";
+
   @ApiProperty({ type: [RiskItemDto] })
   risks!: RiskItemDto[];
 

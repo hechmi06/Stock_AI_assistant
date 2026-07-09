@@ -67,7 +67,7 @@ export type StockAnalysis = {
   checks: Array<{ title: string; detail: string; done: boolean }>;
 };
 
-export type MarketDataSource = "twelve_data" | "yfinance" | "alpha_vantage" | "financial_modeling_prep";
+export type MarketDataSource = "twelve_data" | "yfinance" | "alpha_vantage" | "financial_modeling_prep" | "tiingo";
 export type PriceSource = MarketDataSource | "fallback";
 
 export type PriceQuote = {
@@ -446,6 +446,76 @@ async function fetchTimeSeries(symbol: string) {
     .map((item: { close?: unknown }) => toNumber(item.close))
     .filter((value: number) => value > 0)
     .map((value: number) => Number(value.toFixed(2)));
+}
+
+function periodToCutoffDays(period: string): number {
+  switch (period) {
+    case "5d":
+      return 10;
+    case "1mo":
+      return 35;
+    case "3mo":
+      return 100;
+    case "6mo":
+      return 200;
+    case "1y":
+      return 380;
+    case "2y":
+      return 760;
+    default:
+      return 200;
+  }
+}
+
+// Tiingo : historique EOD gratuit avec quota genereux (vraie API JSON). Sert de
+// source historique fiable quand yfinance est rate-limited (le maillon faible).
+// Inerte tant que TIINGO_API_KEY n'est pas configuree (meme pattern que FMP).
+async function fetchTiingoHistoricalPrices(symbol: string, period = "6mo"): Promise<HistoricalPrice[]> {
+  const token = (process.env.TIINGO_API_KEY ?? "").trim();
+  if (!token) {
+    return [];
+  }
+
+  const startDate = new Date(Date.now() - periodToCutoffDays(period) * 24 * 60 * 60 * 1000)
+    .toISOString()
+    .slice(0, 10);
+  const url = new URL(`https://api.tiingo.com/tiingo/daily/${encodeURIComponent(symbol)}/prices`);
+  url.searchParams.set("startDate", startDate);
+  url.searchParams.set("token", token);
+
+  try {
+    const response = await fetch(url, {
+      headers: { "User-Agent": "stock-ai-assistant-mcp/0.1", Accept: "application/json" },
+      signal: AbortSignal.timeout(10_000),
+    });
+    if (!response.ok) {
+      return [];
+    }
+    const payload = await response.json();
+    if (!Array.isArray(payload)) {
+      return [];
+    }
+
+    // Tiingo renvoie les points par date croissante, ce qui est deja l'ordre attendu.
+    return payload
+      .map((item: Record<string, unknown>): HistoricalPrice | undefined => {
+        const close = toNumber(item.close);
+        if (close <= 0) {
+          return undefined;
+        }
+        return {
+          date: String(item.date ?? "").slice(0, 10),
+          open: toNullableNumber(item.open),
+          high: toNullableNumber(item.high),
+          low: toNullableNumber(item.low),
+          close: Number(close.toFixed(4)),
+          volume: toNumber(item.volume) || null,
+        };
+      })
+      .filter((item): item is HistoricalPrice => Boolean(item?.date));
+  } catch {
+    return [];
+  }
 }
 
 async function fetchTwelveHistoricalPrices(symbol: string, outputsize = "90"): Promise<HistoricalPrice[]> {
@@ -830,7 +900,12 @@ export async function getHistoricalPrices(ticker: string, period = "6mo"): Promi
       return history;
     }
   } catch {
-    // Fall through to Twelve Data historical fallback.
+    // Fall through to Stooq / Twelve Data historical fallback.
+  }
+
+  const tiingo = await fetchTiingoHistoricalPrices(symbol, period);
+  if (tiingo.length > 0) {
+    return tiingo;
   }
 
   return fetchTwelveHistoricalPrices(symbol);
@@ -977,12 +1052,20 @@ export async function getMarketData(ticker: string, period = "6mo"): Promise<Mar
   }
 
   if (historicalPrices.length === 0) {
-    const twelveHistory = await fetchTwelveHistoricalPrices(symbol);
-    if (twelveHistory.length > 0) {
-      sources.add("twelve_data");
-      historicalPrices = twelveHistory;
+    // yfinance vide (souvent rate-limited) : Tiingo d'abord (quota genereux),
+    // puis Twelve Data en dernier recours.
+    const tiingoHistory = await fetchTiingoHistoricalPrices(symbol, period);
+    if (tiingoHistory.length > 0) {
+      sources.add("tiingo");
+      historicalPrices = tiingoHistory;
     } else {
-      errors.push("Twelve Data historical prices unavailable.");
+      const twelveHistory = await fetchTwelveHistoricalPrices(symbol);
+      if (twelveHistory.length > 0) {
+        sources.add("twelve_data");
+        historicalPrices = twelveHistory;
+      } else {
+        errors.push("Historical prices unavailable (yfinance, Tiingo, Twelve Data).");
+      }
     }
   }
 

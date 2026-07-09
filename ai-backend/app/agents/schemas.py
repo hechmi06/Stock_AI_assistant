@@ -4,7 +4,7 @@ from pydantic import BaseModel, Field
 
 
 MarketDataStatus = Literal["success", "partial", "failed"]
-MarketDataSource = Literal["twelve_data", "yfinance", "alpha_vantage", "financial_modeling_prep"]
+MarketDataSource = Literal["twelve_data", "yfinance", "alpha_vantage", "financial_modeling_prep", "tiingo"]
 PriceSource = Literal["twelve_data", "yfinance", "alpha_vantage", "financial_modeling_prep", "fallback"]
 
 
@@ -149,6 +149,9 @@ class RiskResult(BaseModel):
     status: MarketDataStatus
     overall_risk_level: RiskLevel
     risk_score: int = Field(default=0, ge=0, le=100)
+    risk_score_breakdown: dict[str, int] = Field(default_factory=dict)
+    data_confidence_score: int = Field(default=0, ge=0, le=100)
+    data_confidence_level: RiskLevel = "low"
     risks: list[RiskItem] = Field(default_factory=list)
     component_status: AgentRiskSnapshot = Field(default_factory=AgentRiskSnapshot)
     warnings: list[str] = Field(default_factory=list)

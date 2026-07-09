@@ -50,11 +50,11 @@ export class TechnicalResultDto {
   status!: "success" | "partial" | "failed";
 
   @ApiProperty({
-    enum: ["twelve_data", "yfinance", "alpha_vantage", "financial_modeling_prep"],
+    enum: ["twelve_data", "yfinance", "alpha_vantage", "financial_modeling_prep", "tiingo"],
     isArray: true,
     example: ["twelve_data", "financial_modeling_prep"],
   })
-  sources_used!: Array<"twelve_data" | "yfinance" | "alpha_vantage" | "financial_modeling_prep">;
+  sources_used!: Array<"twelve_data" | "yfinance" | "alpha_vantage" | "financial_modeling_prep" | "tiingo">;
 
   @ApiProperty({ example: 58.4, nullable: true, description: "RSI 14 (Wilder)" })
   rsi!: number | null;

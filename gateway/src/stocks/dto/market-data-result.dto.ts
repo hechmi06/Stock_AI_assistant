@@ -94,11 +94,11 @@ export class MarketDataResultDto {
   status!: "success" | "partial" | "failed";
 
   @ApiProperty({
-    enum: ["twelve_data", "yfinance", "alpha_vantage", "financial_modeling_prep"],
+    enum: ["twelve_data", "yfinance", "alpha_vantage", "financial_modeling_prep", "tiingo"],
     isArray: true,
     example: ["twelve_data", "alpha_vantage", "financial_modeling_prep"],
   })
-  sources_used!: Array<"twelve_data" | "yfinance" | "alpha_vantage" | "financial_modeling_prep">;
+  sources_used!: Array<"twelve_data" | "yfinance" | "alpha_vantage" | "financial_modeling_prep" | "tiingo">;
 
   @ApiProperty({ example: false })
   used_fallback!: boolean;

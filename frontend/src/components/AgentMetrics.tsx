@@ -1,11 +1,11 @@
-import { Activity, Bot, CheckCircle2, GaugeCircle, LineChart, Newspaper, RefreshCw, XCircle } from "lucide-react";
+import { Activity, Bot, CheckCircle2, GaugeCircle, LineChart, Newspaper, RefreshCw, ShieldAlert, XCircle } from "lucide-react";
 import { useEffect, useState } from "react";
-import { fetchAgentEvaluation, fetchNewsEvaluation, fetchTechnicalEvaluation, searchUsStocks } from "../services/analysisApi";
+import { fetchAgentEvaluation, fetchNewsEvaluation, fetchRiskEvaluation, fetchTechnicalEvaluation, searchUsStocks } from "../services/analysisApi";
 import type { EvaluationGrade, EvaluationReport, UsStockSymbol } from "../types";
 
 const QUICK_TICKERS = ["AAPL", "MSFT", "NVDA", "GOOGL", "AMZN", "META", "TSLA", "JPM"];
 
-type AgentKind = "market-data" | "technical" | "news";
+type AgentKind = "market-data" | "technical" | "news" | "risk";
 
 const AGENTS: Array<{ id: AgentKind; label: string; description: string }> = [
   {
@@ -22,6 +22,11 @@ const AGENTS: Array<{ id: AgentKind; label: string; description: string }> = [
     id: "news",
     label: "NewsAgent",
     description: "Agent d'actualités (FMP + Yahoo RSS) avec analyse de sentiment via SLM.",
+  },
+  {
+    id: "risk",
+    label: "RiskAgent",
+    description: "Agent de risque : cohérence du diagnostic, séparation risque / confiance des données, traçabilité.",
   },
 ];
 
@@ -49,6 +54,14 @@ const METRIC_LABELS: Record<string, string> = {
   sentiment_availability: "Sentiment global disponible",
   article_sentiment_coverage: "Sentiment par article",
   key_events_detected: "Événements importants détectés",
+  component_coverage: "Couverture des agents amont",
+  risk_score_validity: "Score de risque cohérent",
+  risk_score_purity: "Score de risque non pollué",
+  confidence_score_validity: "Confiance des données cohérente",
+  news_dimension_active: "Dimension news active",
+  evidence_coverage: "Preuves des risques",
+  risk_explainability: "Risques explicables",
+  confidence_explained: "Confiance justifiée",
 };
 
 const GRADE_LABELS: Record<EvaluationGrade, string> = {
@@ -80,7 +93,9 @@ export function AgentMetrics() {
           ? await fetchTechnicalEvaluation(symbol)
           : kind === "news"
             ? await fetchNewsEvaluation(symbol)
-            : await fetchAgentEvaluation(symbol);
+            : kind === "risk"
+              ? await fetchRiskEvaluation(symbol)
+              : await fetchAgentEvaluation(symbol);
       setReport(data);
     } catch {
       setReport(null);
@@ -148,6 +163,8 @@ export function AgentMetrics() {
               <LineChart size={15} />
             ) : entry.id === "news" ? (
               <Newspaper size={15} />
+            ) : entry.id === "risk" ? (
+              <ShieldAlert size={15} />
             ) : (
               <Bot size={15} />
             )}
