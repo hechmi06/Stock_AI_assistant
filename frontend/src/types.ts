@@ -108,6 +108,7 @@ export type NewsArticle = {
   published_at: string;
   url: string;
   summary: string | null;
+  content: string | null;
   origin: NewsOrigin;
   sentiment: NewsSentiment | null;
 };

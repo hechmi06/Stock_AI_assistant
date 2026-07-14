@@ -226,13 +226,15 @@ class NebiusClient:
 
     def _build_news_prompt(self, payload: dict[str, Any]) -> str:
         articles = payload.get("articles") or []
+        # Texte extrait (content) prioritaire sur le resume du flux : le SLM
+        # dispose alors d'un contexte plus riche pour juger le sentiment.
         compact_articles = [
             {
                 "index": index,
                 "title": article.get("title"),
                 "source": article.get("source"),
                 "published_at": article.get("published_at"),
-                "summary": (article.get("summary") or "")[:300] or None,
+                "summary": (article.get("content") or article.get("summary") or "")[:900] or None,
             }
             for index, article in enumerate(articles)
         ]

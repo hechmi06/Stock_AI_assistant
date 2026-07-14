@@ -17,6 +17,13 @@ class NewsArticleDto {
   summary!: string | null;
 
   @ApiProperty({
+    description: "Texte principal extrait de l'article (si NEWS_EXTRACT_CONTENT actif), sinon null.",
+    example: null,
+    nullable: true,
+  })
+  content!: string | null;
+
+  @ApiProperty({
     enum: ["financial_modeling_prep", "yahoo_rss", "finnhub", "google_news_rss", "newsdata_io"],
     example: "yahoo_rss",
   })

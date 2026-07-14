@@ -744,6 +744,8 @@ technical_summary
 Role :
 
 - recuperer les actualites recentes (outil MCP `news/{ticker}` : FMP + Yahoo RSS + Finnhub + Google News RSS (gratuit) + NewsData.io en parallele, deduplication par titre, plafond de 6 articles par source, cache 10 min) ;
+- **filtrer la pertinence** : un article est ecarte s'il ne mentionne ni le ticker ni un token du nom de societe (dans le titre ou le resume). Actif quand le nom est fourni (le RiskAgent le passe depuis le profil ; sur l'endpoint direct via `?name=Tesla`). Un garde-fou conserve la liste brute si le filtre vide tout ;
+- **extraction du texte d'article** (opt-in `NEWS_EXTRACT_CONTENT=true`) : pour les 6 articles les plus recents, le mcp-server telecharge la page et extrait le texte principal (`content`) via `trafilatura` ; le SLM juge alors le sentiment sur ce texte plutot que sur le seul titre+resume. Degrade en silence (paywall, anti-bot, trafilatura absent) en retombant sur le resume ;
 - analyser le sentiment global (label + score entre -1 et 1) et le sentiment de chaque article via le SLM Nebius (meme modele que les autres agents, `NEBIUS_MODEL`) ;
 - detecter les evenements importants (resultats, M&A, proces, lancements) ;
 - memoriser : memoire documentaire SQLite (runs + articles dedupliques + historique de sentiment) et faits news dans le Knowledge Graph (`has_news_sentiment`, `affected_by_event`, `news_from`) ;

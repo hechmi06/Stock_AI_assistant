@@ -75,7 +75,14 @@ const server = createServer(async (request, response) => {
 
     const newsMatch = url.pathname.match(/^\/news\/([^/]+)$/);
     if (request.method === "GET" && newsMatch) {
-      sendJson(response, 200, await getStockNews(decodeURIComponent(newsMatch[1])));
+      sendJson(
+        response,
+        200,
+        await getStockNews(decodeURIComponent(newsMatch[1]), {
+          name: url.searchParams.get("name") ?? undefined,
+          extract: url.searchParams.get("extract") === "1" || url.searchParams.get("extract") === "true",
+        }),
+      );
       return;
     }
 

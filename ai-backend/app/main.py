@@ -346,9 +346,12 @@ def get_technical_memory(ticker: str) -> dict[str, object]:
 
 
 @app.get("/agents/news/{ticker}", response_model=NewsResult)
-def run_news_agent(ticker: str, fresh: bool = False) -> NewsResult:
-    """Actualites + sentiment via le NewsAgent (FMP + Yahoo RSS, analyse SLM)."""
-    return news_agent.run(ticker, use_cache=not fresh)
+def run_news_agent(ticker: str, fresh: bool = False, name: str | None = None) -> NewsResult:
+    """Actualites + sentiment via le NewsAgent (FMP + Yahoo RSS, analyse SLM).
+
+    `name` (nom de societe) active le filtre de pertinence des articles.
+    """
+    return news_agent.run(ticker, use_cache=not fresh, company_name=name)
 
 
 @app.get("/agents/news/{ticker}/evaluation", response_model=EvaluationReport)

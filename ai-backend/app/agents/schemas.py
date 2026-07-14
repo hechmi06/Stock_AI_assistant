@@ -105,6 +105,7 @@ class NewsArticle(BaseModel):
     published_at: str
     url: str
     summary: str | None = None
+    content: str | None = None
     origin: NewsOrigin
     sentiment: NewsSentiment | None = None
 
