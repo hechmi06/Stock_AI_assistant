@@ -13,6 +13,7 @@ import {
   searchUsStocks,
 } from "./marketData.js";
 import { getStockNews } from "./news.js";
+import { getSecDocumentText, getSecFilings } from "./sec.js";
 
 function sendJson(response: ServerResponse, status: number, payload: unknown) {
   response.writeHead(status, {
@@ -83,6 +84,25 @@ const server = createServer(async (request, response) => {
           extract: url.searchParams.get("extract") === "1" || url.searchParams.get("extract") === "true",
         }),
       );
+      return;
+    }
+
+    const secFilingsMatch = url.pathname.match(/^\/tools\/sec-filings\/([^/]+)$/);
+    if (request.method === "GET" && secFilingsMatch) {
+      const formsParam = url.searchParams.get("forms");
+      const forms = formsParam ? formsParam.split(",").map((f) => f.trim()).filter(Boolean) : undefined;
+      const limit = Number(url.searchParams.get("limit") ?? "4");
+      sendJson(
+        response,
+        200,
+        await getSecFilings(decodeURIComponent(secFilingsMatch[1]), forms, Number.isFinite(limit) ? limit : 4),
+      );
+      return;
+    }
+
+    if (request.method === "GET" && url.pathname === "/tools/sec-document") {
+      const docUrl = url.searchParams.get("url") ?? "";
+      sendJson(response, 200, await getSecDocumentText(docUrl));
       return;
     }
 
