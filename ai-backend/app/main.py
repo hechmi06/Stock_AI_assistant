@@ -23,6 +23,7 @@ from app.agents.evaluation import (
     EvaluationReport,
     evaluate_market_data,
     evaluate_news,
+    evaluate_rag,
     evaluate_risk,
     evaluate_technical,
 )
@@ -387,6 +388,17 @@ def ingest_rag_documents(ticker: str, limit: int = 2) -> RagIngestResult:
 def query_rag_documents(ticker: str, q: str) -> RagResult:
     """Interroge les documents financiers indexes et renvoie une reponse sourcee."""
     return rag_agent.query(ticker, q)
+
+
+@app.get("/agents/rag/{ticker}/evaluation", response_model=EvaluationReport)
+def evaluate_rag_agent(ticker: str) -> EvaluationReport:
+    """Evaluation qualite du RAGAgent : ingere si besoin puis evalue une requete standard."""
+    question = "What are the main risk factors and business segments of the company?"
+    result = rag_agent.query(ticker, question)
+    if result.status == "failed" and result.indexed_chunks == 0:
+        rag_agent.ingest(ticker, limit=1)
+        result = rag_agent.query(ticker, question)
+    return evaluate_rag(result)
 
 
 @app.get("/agents/risk/{ticker}/evaluation", response_model=EvaluationReport)

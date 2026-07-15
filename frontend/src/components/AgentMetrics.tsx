@@ -1,11 +1,11 @@
-import { Activity, Bot, CheckCircle2, GaugeCircle, LineChart, Newspaper, RefreshCw, ShieldAlert, XCircle } from "lucide-react";
+import { Activity, Bot, BookOpen, CheckCircle2, GaugeCircle, LineChart, Newspaper, RefreshCw, ShieldAlert, XCircle } from "lucide-react";
 import { useEffect, useState } from "react";
-import { fetchAgentEvaluation, fetchNewsEvaluation, fetchRiskEvaluation, fetchTechnicalEvaluation, searchUsStocks } from "../services/analysisApi";
+import { fetchAgentEvaluation, fetchNewsEvaluation, fetchRagEvaluation, fetchRiskEvaluation, fetchTechnicalEvaluation, searchUsStocks } from "../services/analysisApi";
 import type { EvaluationGrade, EvaluationReport, UsStockSymbol } from "../types";
 
 const QUICK_TICKERS = ["AAPL", "MSFT", "NVDA", "GOOGL", "AMZN", "META", "TSLA", "JPM"];
 
-type AgentKind = "market-data" | "technical" | "news" | "risk";
+type AgentKind = "market-data" | "technical" | "news" | "risk" | "rag";
 
 const AGENTS: Array<{ id: AgentKind; label: string; description: string }> = [
   {
@@ -27,6 +27,11 @@ const AGENTS: Array<{ id: AgentKind; label: string; description: string }> = [
     id: "risk",
     label: "RiskAgent",
     description: "Agent de risque : cohérence du diagnostic, séparation risque / confiance des données, traçabilité.",
+  },
+  {
+    id: "rag",
+    label: "RAGAgent",
+    description: "Agent documentaire : indexation SEC EDGAR (10-K/10-Q), recherche sémantique et réponses sourcées.",
   },
 ];
 
@@ -62,6 +67,12 @@ const METRIC_LABELS: Record<string, string> = {
   evidence_coverage: "Preuves des risques",
   risk_explainability: "Risques explicables",
   confidence_explained: "Confiance justifiée",
+  corpus_indexed: "Corpus indexé",
+  passages_retrieved: "Passages récupérés",
+  retrieval_relevance: "Pertinence de la recherche",
+  answer_present: "Réponse présente",
+  answer_grounded: "Réponse ancrée (citations)",
+  source_traceability: "Traçabilité des sources",
 };
 
 const GRADE_LABELS: Record<EvaluationGrade, string> = {
@@ -95,7 +106,9 @@ export function AgentMetrics() {
             ? await fetchNewsEvaluation(symbol)
             : kind === "risk"
               ? await fetchRiskEvaluation(symbol)
-              : await fetchAgentEvaluation(symbol);
+              : kind === "rag"
+                ? await fetchRagEvaluation(symbol)
+                : await fetchAgentEvaluation(symbol);
       setReport(data);
     } catch {
       setReport(null);
@@ -165,6 +178,8 @@ export function AgentMetrics() {
               <Newspaper size={15} />
             ) : entry.id === "risk" ? (
               <ShieldAlert size={15} />
+            ) : entry.id === "rag" ? (
+              <BookOpen size={15} />
             ) : (
               <Bot size={15} />
             )}
