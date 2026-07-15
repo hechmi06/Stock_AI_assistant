@@ -105,6 +105,7 @@ class NewsArticle(BaseModel):
     published_at: str
     url: str
     summary: str | None = None
+    content: str | None = None
     origin: NewsOrigin
     sentiment: NewsSentiment | None = None
 
@@ -157,6 +158,41 @@ class RiskResult(BaseModel):
     warnings: list[str] = Field(default_factory=list)
     errors: list[str] = Field(default_factory=list)
     slm_summary: SlmSummary | None = None
+
+
+class RagPassage(BaseModel):
+    text: str
+    form: str | None = None
+    filing_date: str | None = None
+    url: str | None = None
+    score: float = 0.0
+
+
+class RagDocument(BaseModel):
+    form: str
+    filing_date: str | None = None
+    url: str
+    chunks_indexed: int = 0
+
+
+class RagIngestResult(BaseModel):
+    ticker: str
+    status: MarketDataStatus
+    documents: list[RagDocument] = Field(default_factory=list)
+    chunks_indexed: int = 0
+    warnings: list[str] = Field(default_factory=list)
+    errors: list[str] = Field(default_factory=list)
+
+
+class RagResult(BaseModel):
+    ticker: str
+    question: str
+    status: MarketDataStatus
+    answer: str | None = None
+    passages: list[RagPassage] = Field(default_factory=list)
+    indexed_chunks: int = 0
+    warnings: list[str] = Field(default_factory=list)
+    errors: list[str] = Field(default_factory=list)
 
 
 class MarketDataResult(BaseModel):

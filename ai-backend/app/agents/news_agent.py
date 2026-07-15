@@ -7,6 +7,7 @@ dans la memoire documentaire + le knowledge graph partage.
 
 import os
 from datetime import datetime, timezone
+from urllib.parse import quote
 
 from app.memory import NewsAgentMemory
 
@@ -27,6 +28,11 @@ def _cache_ttl_seconds() -> int:
         return DEFAULT_CACHE_TTL_SECONDS
 
 
+def _extract_content_enabled() -> bool:
+    """Extraction du texte d'article (opt-in via NEWS_EXTRACT_CONTENT)."""
+    return os.getenv("NEWS_EXTRACT_CONTENT", "").strip().lower() in {"1", "true", "yes", "on"}
+
+
 class NewsAgent:
     def __init__(
         self,
@@ -38,7 +44,13 @@ class NewsAgent:
         self.slm_client = slm_client or NebiusClient()
         self.memory = memory or NewsAgentMemory()
 
-    def run(self, ticker: str, use_cache: bool = True, with_slm: bool = True) -> NewsResult:
+    def run(
+        self,
+        ticker: str,
+        use_cache: bool = True,
+        with_slm: bool = True,
+        company_name: str | None = None,
+    ) -> NewsResult:
         normalized_ticker = ticker.strip().upper()
         if not normalized_ticker:
             return NewsResult(ticker="", status="failed", errors=["Ticker is required."])
@@ -48,7 +60,16 @@ class NewsAgent:
             if cached is not None:
                 return cached
 
-        payload = self.mcp_client.get(f"news/{normalized_ticker}")
+        extract = _extract_content_enabled()
+        params = []
+        if company_name and company_name.strip():
+            params.append(f"name={quote(company_name.strip())}")
+        if extract:
+            params.append("extract=1")
+        query = f"?{'&'.join(params)}" if params else ""
+        # L'extraction telecharge des pages : allonge le timeout MCP en consequence.
+        timeout = 90 if extract else 20
+        payload = self.mcp_client.get(f"news/{normalized_ticker}{query}", timeout=timeout)
         if not payload:
             return self._recall_from_memory(normalized_ticker)
 

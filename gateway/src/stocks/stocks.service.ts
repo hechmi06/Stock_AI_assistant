@@ -195,6 +195,32 @@ type RiskResult = {
   } | null;
 };
 
+type RagResult = {
+  ticker: string;
+  question: string;
+  status: "success" | "partial" | "failed";
+  answer: string | null;
+  passages: Array<{
+    text: string;
+    form: string | null;
+    filing_date: string | null;
+    url: string | null;
+    score: number;
+  }>;
+  indexed_chunks: number;
+  warnings: string[];
+  errors: string[];
+};
+
+type RagIngestResult = {
+  ticker: string;
+  status: "success" | "partial" | "failed";
+  documents: Array<{ form: string; filing_date: string | null; url: string; chunks_indexed: number }>;
+  chunks_indexed: number;
+  warnings: string[];
+  errors: string[];
+};
+
 type MetricResult = {
   name: string;
   score: number;
@@ -449,6 +475,53 @@ export class StocksService {
     }
   }
 
+  async queryRag(ticker: string, question: string): Promise<RagResult> {
+    const normalizedTicker = ticker.trim().toUpperCase();
+    try {
+      const response = await fetch(
+        `${this.aiBackendUrl}/agents/rag/${normalizedTicker}/query?q=${encodeURIComponent(question)}`,
+      );
+      if (!response.ok) {
+        throw new Error(`AI backend returned ${response.status}`);
+      }
+      return (await response.json()) as RagResult;
+    } catch {
+      return {
+        ticker: normalizedTicker || "AAPL",
+        question,
+        status: "failed",
+        answer: null,
+        passages: [],
+        indexed_chunks: 0,
+        warnings: [],
+        errors: ["Gateway could not reach the AI backend RAGAgent query endpoint."],
+      };
+    }
+  }
+
+  async ingestRag(ticker: string, limit = 2): Promise<RagIngestResult> {
+    const normalizedTicker = ticker.trim().toUpperCase();
+    try {
+      const response = await fetch(
+        `${this.aiBackendUrl}/agents/rag/${normalizedTicker}/ingest?limit=${limit}`,
+        { method: "POST" },
+      );
+      if (!response.ok) {
+        throw new Error(`AI backend returned ${response.status}`);
+      }
+      return (await response.json()) as RagIngestResult;
+    } catch {
+      return {
+        ticker: normalizedTicker || "AAPL",
+        status: "failed",
+        documents: [],
+        chunks_indexed: 0,
+        warnings: [],
+        errors: ["Gateway could not reach the AI backend RAGAgent ingest endpoint."],
+      };
+    }
+  }
+
   async getAgentEvaluation(ticker: string): Promise<EvaluationReport> {
     return this.fetchEvaluation(ticker, "market-data");
   }
@@ -465,9 +538,13 @@ export class StocksService {
     return this.fetchEvaluation(ticker, "risk");
   }
 
+  async getRagEvaluation(ticker: string): Promise<EvaluationReport> {
+    return this.fetchEvaluation(ticker, "rag");
+  }
+
   private async fetchEvaluation(
     ticker: string,
-    agent: "market-data" | "technical" | "news" | "risk",
+    agent: "market-data" | "technical" | "news" | "risk" | "rag",
   ): Promise<EvaluationReport> {
     const normalizedTicker = ticker.trim().toUpperCase();
 

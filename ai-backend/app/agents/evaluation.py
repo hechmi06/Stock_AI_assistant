@@ -8,6 +8,7 @@ prediction). Chaque metrique renvoie un nom, un score entre 0 et 1, un booleen
 
 from __future__ import annotations
 
+import re
 from typing import Literal
 
 from pydantic import BaseModel, Field
@@ -15,7 +16,7 @@ from pydantic import BaseModel, Field
 from datetime import datetime, timezone
 
 from .risk_scoring import compute_risk_score
-from .schemas import MarketDataResult, NewsResult, RiskResult, TechnicalResult
+from .schemas import MarketDataResult, NewsResult, RagResult, RiskResult, TechnicalResult
 
 Grade = Literal["excellent", "good", "partial", "poor"]
 
@@ -917,6 +918,150 @@ def evaluate_risk(result: RiskResult) -> EvaluationReport:
         _risk_confidence_explained(result),
         _risk_controlled_errors(result),
         _risk_slm_summary(result),
+    ]
+
+    return _build_report(result.ticker, metrics)
+
+
+# ---------------------------------------------------------------------------
+# Evaluation du RAGAgent
+# ---------------------------------------------------------------------------
+#
+# Le RAGAgent est evalue sur la qualite d'une requete : corpus indexe, pertinence
+# de la recherche, presence et ancrage (citations) de la reponse, tracabilite
+# des passages vers les depots SEC officiels.
+
+RAG_PASSAGES_TARGET = 4
+RAG_RELEVANCE_MIN = 0.35  # score cosinus minimal pour un passage pertinent
+RAG_CITATION_RE = re.compile(r"\[\d+\]")
+
+
+def _rag_agent_availability(result: RagResult) -> MetricResult:
+    ok = result.status != "failed"
+    return MetricResult(
+        name="agent_availability",
+        score=1.0 if ok else 0.0,
+        passed=ok,
+        message="Agent operationnel, requete exploitable." if ok else "Requete en echec (status=failed).",
+    )
+
+
+def _rag_status_validity(result: RagResult) -> MetricResult:
+    has_passages = bool(result.passages)
+    coherent = (result.status == "failed") != has_passages
+    if result.status == "success":
+        score = 1.0
+    elif result.status == "partial":
+        score = 0.7
+    else:
+        score = 0.0
+    if not coherent:
+        score *= 0.5
+    return MetricResult(
+        name="status_validity",
+        score=_clamp01(score),
+        passed=coherent and result.status != "failed",
+        message=f"Statut '{result.status}' {'coherent' if coherent else 'incoherent'} avec les passages.",
+    )
+
+
+def _rag_corpus_indexed(result: RagResult) -> MetricResult:
+    ok = result.indexed_chunks > 0
+    return MetricResult(
+        name="corpus_indexed",
+        score=1.0 if ok else 0.0,
+        passed=ok,
+        message=(
+            f"{result.indexed_chunks} passage(s) indexe(s) pour ce ticker."
+            if ok
+            else "Aucun document indexe (lancer l'ingestion)."
+        ),
+    )
+
+
+def _rag_passages_retrieved(result: RagResult) -> MetricResult:
+    count = len(result.passages)
+    return MetricResult(
+        name="passages_retrieved",
+        score=_clamp01(count / RAG_PASSAGES_TARGET),
+        passed=count >= 1,
+        message=f"{count} passage(s) recupere(s) (cible {RAG_PASSAGES_TARGET}).",
+    )
+
+
+def _rag_retrieval_relevance(result: RagResult) -> MetricResult:
+    if not result.passages:
+        return MetricResult(name="retrieval_relevance", score=0.0, passed=False, message="Aucun passage a evaluer.")
+    top = max(passage.score for passage in result.passages)
+    return MetricResult(
+        name="retrieval_relevance",
+        score=_clamp01(top),
+        passed=top >= RAG_RELEVANCE_MIN,
+        message=f"Meilleur score de pertinence : {top:.3f} (seuil {RAG_RELEVANCE_MIN}).",
+    )
+
+
+def _rag_answer_present(result: RagResult) -> MetricResult:
+    ok = bool(result.answer and result.answer.strip())
+    return MetricResult(
+        name="answer_present",
+        score=1.0 if ok else 0.0,
+        passed=ok,
+        message="Reponse synthetisee presente." if ok else "Aucune reponse SLM (passages bruts seulement).",
+    )
+
+
+def _rag_answer_grounded(result: RagResult) -> MetricResult:
+    answer = result.answer or ""
+    ok = bool(RAG_CITATION_RE.search(answer))
+    if not answer.strip():
+        return MetricResult(name="answer_grounded", score=0.0, passed=False, message="Pas de reponse a ancrer.")
+    return MetricResult(
+        name="answer_grounded",
+        score=1.0 if ok else 0.3,
+        passed=ok,
+        message="Reponse ancree (citations [n] presentes)." if ok else "Reponse sans citation de source.",
+    )
+
+
+def _rag_source_traceability(result: RagResult) -> MetricResult:
+    total = len(result.passages)
+    if total == 0:
+        return MetricResult(name="source_traceability", score=0.0, passed=False, message="Aucun passage a tracer.")
+    traceable = sum(1 for passage in result.passages if passage.form and passage.url)
+    ratio = traceable / total
+    return MetricResult(
+        name="source_traceability",
+        score=_clamp01(ratio),
+        passed=ratio >= 0.9,
+        message=f"{traceable}/{total} passage(s) traçable(s) vers un depot SEC (form + url).",
+    )
+
+
+def _rag_controlled_errors(result: RagResult) -> MetricResult:
+    count = len(result.errors)
+    warn_count = len(result.warnings)
+    score = _clamp01(1.0 - count / ERROR_SCALE)
+    message = (
+        f"Aucune erreur fatale ({warn_count} avertissement(s))."
+        if count == 0
+        else f"{count} erreur(s) fatale(s), {warn_count} avertissement(s)."
+    )
+    return MetricResult(name="controlled_errors", score=score, passed=count <= ERROR_MAX_PASS, message=message)
+
+
+def evaluate_rag(result: RagResult) -> EvaluationReport:
+    """Evalue un resultat de requete RAGAgent et renvoie un rapport complet."""
+    metrics = [
+        _rag_agent_availability(result),
+        _rag_status_validity(result),
+        _rag_corpus_indexed(result),
+        _rag_passages_retrieved(result),
+        _rag_retrieval_relevance(result),
+        _rag_answer_present(result),
+        _rag_answer_grounded(result),
+        _rag_source_traceability(result),
+        _rag_controlled_errors(result),
     ]
 
     return _build_report(result.ticker, metrics)

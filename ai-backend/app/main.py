@@ -11,6 +11,9 @@ from app.agents import (
     MarketDataResult,
     NewsAgent,
     NewsResult,
+    RagAgent,
+    RagIngestResult,
+    RagResult,
     RiskAgent,
     RiskResult,
     TechnicalAgent,
@@ -20,6 +23,7 @@ from app.agents.evaluation import (
     EvaluationReport,
     evaluate_market_data,
     evaluate_news,
+    evaluate_rag,
     evaluate_risk,
     evaluate_technical,
 )
@@ -49,6 +53,7 @@ risk_agent = RiskAgent(
     technical_agent=technical_agent,
     news_agent=news_agent,
 )
+rag_agent = RagAgent(graph=getattr(market_data_agent.memory, "graph", None))
 
 
 class Metric(BaseModel):
@@ -346,9 +351,12 @@ def get_technical_memory(ticker: str) -> dict[str, object]:
 
 
 @app.get("/agents/news/{ticker}", response_model=NewsResult)
-def run_news_agent(ticker: str, fresh: bool = False) -> NewsResult:
-    """Actualites + sentiment via le NewsAgent (FMP + Yahoo RSS, analyse SLM)."""
-    return news_agent.run(ticker, use_cache=not fresh)
+def run_news_agent(ticker: str, fresh: bool = False, name: str | None = None) -> NewsResult:
+    """Actualites + sentiment via le NewsAgent (FMP + Yahoo RSS, analyse SLM).
+
+    `name` (nom de societe) active le filtre de pertinence des articles.
+    """
+    return news_agent.run(ticker, use_cache=not fresh, company_name=name)
 
 
 @app.get("/agents/news/{ticker}/evaluation", response_model=EvaluationReport)
@@ -368,6 +376,29 @@ def get_news_memory(ticker: str) -> dict[str, object]:
 def run_risk_agent(ticker: str, fresh: bool = False) -> RiskResult:
     """Diagnostic de risque via MarketDataAgent + TechnicalAgent + NewsAgent."""
     return risk_agent.run(ticker, use_cache=not fresh)
+
+
+@app.post("/agents/rag/{ticker}/ingest", response_model=RagIngestResult)
+def ingest_rag_documents(ticker: str, limit: int = 2) -> RagIngestResult:
+    """Indexe les 10-K/10-Q SEC EDGAR d'un ticker dans la base vectorielle."""
+    return rag_agent.ingest(ticker, limit=limit)
+
+
+@app.get("/agents/rag/{ticker}/query", response_model=RagResult)
+def query_rag_documents(ticker: str, q: str) -> RagResult:
+    """Interroge les documents financiers indexes et renvoie une reponse sourcee."""
+    return rag_agent.query(ticker, q)
+
+
+@app.get("/agents/rag/{ticker}/evaluation", response_model=EvaluationReport)
+def evaluate_rag_agent(ticker: str) -> EvaluationReport:
+    """Evaluation qualite du RAGAgent : ingere si besoin puis evalue une requete standard."""
+    question = "What are the main risk factors and business segments of the company?"
+    result = rag_agent.query(ticker, question)
+    if result.status == "failed" and result.indexed_chunks == 0:
+        rag_agent.ingest(ticker, limit=1)
+        result = rag_agent.query(ticker, question)
+    return evaluate_rag(result)
 
 
 @app.get("/agents/risk/{ticker}/evaluation", response_model=EvaluationReport)

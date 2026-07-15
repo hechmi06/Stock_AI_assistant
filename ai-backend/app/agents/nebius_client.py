@@ -6,6 +6,11 @@ import requests
 
 DEFAULT_BASE_URL = "https://api.studio.nebius.com/v1"
 DEFAULT_MODEL = "Qwen/Qwen3-30B-A3B-Instruct-2507"
+DEFAULT_EMBEDDING_MODEL = "Qwen/Qwen3-Embedding-8B"
+
+
+def resolve_embedding_model() -> str:
+    return os.getenv("NEBIUS_EMBEDDING_MODEL", DEFAULT_EMBEDDING_MODEL).strip() or DEFAULT_EMBEDDING_MODEL
 
 
 def resolve_nebius_model(agent: str | None = None) -> str:
@@ -118,6 +123,85 @@ class NebiusClient:
             "warnings": self._string_list(parsed.get("warnings")),
         }
 
+    def embed(self, texts: list[str], model: str | None = None) -> list[list[float]]:
+        """Embeddings via l'API Nebius (compatible OpenAI). Un appel par lot.
+
+        Leve une exception si la cle est absente ou si l'API echoue : l'appelant
+        (RAGAgent) gere le repli. Renvoie une liste de vecteurs alignee sur texts.
+        """
+        if not texts:
+            return []
+        if not self.api_key:
+            raise RuntimeError("NEBIUS_API_KEY manquante pour les embeddings.")
+
+        embedding_model = model or resolve_embedding_model()
+        response = requests.post(
+            f"{self.base_url}/embeddings",
+            headers={
+                "Authorization": f"Bearer {self.api_key}",
+                "Content-Type": "application/json",
+            },
+            json={"model": embedding_model, "input": texts},
+            timeout=90,
+        )
+        response.raise_for_status()
+        body = response.json()
+        data = body.get("data")
+        if not isinstance(data, list) or len(data) != len(texts):
+            raise RuntimeError("Reponse embeddings Nebius inattendue.")
+        # L'API renvoie les vecteurs avec un champ index : on respecte cet ordre.
+        ordered = sorted(data, key=lambda item: item.get("index", 0))
+        return [item["embedding"] for item in ordered]
+
+    def answer_rag(self, question: str, passages: list[dict[str, Any]]) -> str | None:
+        """Reponse sourcee a partir de passages de documents SEC (RAGAgent).
+
+        Le SLM ne repond qu'a partir des passages fournis, cite les sources
+        [1], [2]... et dit explicitement s'il ne trouve pas l'information.
+        """
+        if not self.is_enabled() or not passages:
+            return None
+
+        blocks = []
+        for index, passage in enumerate(passages, start=1):
+            src = f"{passage.get('form') or 'SEC'} {passage.get('filing_date') or ''}".strip()
+            text = str(passage.get("text") or "")[:1200]
+            blocks.append(f"[{index}] (source: {src})\n{text}")
+        context = "\n\n".join(blocks)
+
+        system = (
+            "Tu es un assistant d'analyse de documents financiers officiels (SEC 10-K/10-Q).\n"
+            "Reponds UNIQUEMENT a partir des passages fournis, en francais.\n"
+            "Cite tes sources avec les numeros entre crochets [1], [2].\n"
+            "Si l'information n'est pas dans les passages, dis-le explicitement sans inventer.\n"
+            "Ne donne pas de recommandation d'achat/vente."
+        )
+        user = f"QUESTION:\n{question}\n\nPASSAGES:\n{context}"
+        try:
+            response = requests.post(
+                f"{self.base_url}/chat/completions",
+                headers={"Authorization": f"Bearer {self.api_key}", "Content-Type": "application/json"},
+                json={
+                    "model": self.model,
+                    "temperature": 0.1,
+                    "max_tokens": 800,
+                    "messages": [
+                        {"role": "system", "content": system},
+                        {"role": "user", "content": user},
+                    ],
+                },
+                timeout=60,
+            )
+            response.raise_for_status()
+            body = response.json()
+            choices = body.get("choices")
+            if not isinstance(choices, list) or not choices:
+                return None
+            content = choices[0].get("message", {}).get("content")
+            return content.strip() if isinstance(content, str) and content.strip() else None
+        except Exception:
+            return None
+
     def _chat_json(self, system_prompt: str, user_prompt: str) -> dict[str, Any] | None:
         response = requests.post(
             f"{self.base_url}/chat/completions",
@@ -226,13 +310,15 @@ class NebiusClient:
 
     def _build_news_prompt(self, payload: dict[str, Any]) -> str:
         articles = payload.get("articles") or []
+        # Texte extrait (content) prioritaire sur le resume du flux : le SLM
+        # dispose alors d'un contexte plus riche pour juger le sentiment.
         compact_articles = [
             {
                 "index": index,
                 "title": article.get("title"),
                 "source": article.get("source"),
                 "published_at": article.get("published_at"),
-                "summary": (article.get("summary") or "")[:300] or None,
+                "summary": (article.get("content") or article.get("summary") or "")[:900] or None,
             }
             for index, article in enumerate(articles)
         ]

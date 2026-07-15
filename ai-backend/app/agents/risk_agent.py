@@ -58,8 +58,14 @@ class RiskAgent:
         # reste None, la dimension "risque news" ne se declenche jamais et
         # NewsAgent est fige en "partial". C'est le coeur du signal news pour le
         # risque, donc on garde with_slm active ici (market/technical n'en ont
-        # pas besoin, leurs chiffres sont calcules sans SLM).
-        news = self.news_agent.run(normalized_ticker, use_cache=use_cache, with_slm=True)
+        # pas besoin, leurs chiffres sont calcules sans SLM). Le nom de societe
+        # (issu du profil) alimente le filtre de pertinence des articles.
+        news = self.news_agent.run(
+            normalized_ticker,
+            use_cache=use_cache,
+            with_slm=True,
+            company_name=market_data.company_profile.name,
+        )
 
         risks: list[RiskItem] = []
         warnings: list[str] = []
@@ -468,6 +474,12 @@ class RiskAgent:
         news: NewsResult,
         warnings: list[str],
     ) -> int:
+        # La confiance mesure la disponibilite REELLE des donnees, pas le bruit
+        # des sources redondantes. Une source secondaire rate-limited ou
+        # indisponible ne fait pas baisser la confiance si la donnee a ete
+        # obtenue ailleurs (meme principe que le prompt SLM). Seuls comptent :
+        # le statut des composants, la redondance des sources reellement
+        # utilisees, la completude effective et le recours a un secours interne.
         score = 100
         for status in (market_data.status, technical.status, news.status):
             if status == "failed":
@@ -475,8 +487,14 @@ class RiskAgent:
             elif status == "partial":
                 score -= 12
 
-        if len(market_data.sources_used) < 2:
+        # Redondance des sources marche effectivement utilisees (pas les warnings).
+        market_sources = len(market_data.sources_used)
+        if market_sources == 0:
+            score -= 25
+        elif market_sources == 1:
             score -= 12
+
+        # Completude effective des donnees : ce qui a vraiment ete collecte.
         if not market_data.historical_prices:
             score -= 20
         if not market_data.company_profile.name:
@@ -484,20 +502,15 @@ class RiskAgent:
         if not news.articles:
             score -= 20
         elif len(news.sources_used) < 2:
-            score -= 10
+            score -= 8
 
-        rate_limit_count = len(self._matching_warnings(warnings, ["rate limit", "too many requests"]))
-        source_issue_count = len(
-            self._matching_warnings(
-                warnings,
-                ["unavailable", "indisponible", "missing key", "quota", "restricted", "fetch failed"],
-            )
-        )
-        cache_count = len(self._matching_warnings(warnings, ["cache memoire"]))
+        # Degradations reelles de fraicheur (secours interne / cache resservi),
+        # a distinguer d'un simple warning de source redondante indisponible.
+        if market_data.used_fallback:
+            score -= 15
+        if self._matching_warnings(warnings, ["cache memoire"]):
+            score -= 8
 
-        score -= min(20, rate_limit_count * 10)
-        score -= min(25, source_issue_count * 5)
-        score -= min(10, cache_count * 5)
         return max(0, min(100, score))
 
     def _remember(self, result: RiskResult) -> None:

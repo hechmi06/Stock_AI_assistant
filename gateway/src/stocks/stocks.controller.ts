@@ -1,8 +1,9 @@
-import { Controller, Get, Param, Query } from "@nestjs/common";
-import { ApiOkResponse, ApiOperation, ApiParam, ApiTags } from "@nestjs/swagger";
+import { Controller, Get, Param, Post, Query } from "@nestjs/common";
+import { ApiOkResponse, ApiOperation, ApiParam, ApiQuery, ApiTags } from "@nestjs/swagger";
 import { EvaluationReportDto } from "./dto/evaluation-report.dto";
 import { MarketDataResultDto } from "./dto/market-data-result.dto";
 import { NewsResultDto } from "./dto/news-result.dto";
+import { RagIngestResultDto, RagResultDto } from "./dto/rag-result.dto";
 import { RiskResultDto } from "./dto/risk-result.dto";
 import { TechnicalResultDto } from "./dto/technical-result.dto";
 import { StocksService } from "./stocks.service";
@@ -113,6 +114,44 @@ export class StocksController {
   @Get(":ticker/risk/evaluation")
   getRiskEvaluation(@Param("ticker") ticker: string) {
     return this.stocksService.getRiskEvaluation(ticker);
+  }
+
+  @ApiOperation({
+    summary: "RAGAgent : indexer les documents SEC (10-K/10-Q)",
+    description:
+      "Telecharge les derniers depots SEC EDGAR du ticker, les decoupe et les indexe dans la base vectorielle. A lancer avant d'interroger.",
+  })
+  @ApiParam({ name: "ticker", example: "MSFT", description: "Symbole boursier" })
+  @ApiQuery({ name: "limit", required: false, example: 2, description: "Nombre de depots a indexer (defaut 2)" })
+  @ApiOkResponse({ type: RagIngestResultDto })
+  @Post(":ticker/rag/ingest")
+  ingestRag(@Param("ticker") ticker: string, @Query("limit") limit?: string) {
+    return this.stocksService.ingestRag(ticker, limit ? Number(limit) : 2);
+  }
+
+  @ApiOperation({
+    summary: "RAGAgent : interroger les documents financiers",
+    description:
+      "Recherche semantique dans les depots SEC indexes et renvoie une reponse sourcee (citations [1], [2]) avec les passages.",
+  })
+  @ApiParam({ name: "ticker", example: "MSFT", description: "Symbole boursier" })
+  @ApiQuery({ name: "q", required: true, example: "Quels sont les principaux facteurs de risque ?" })
+  @ApiOkResponse({ type: RagResultDto })
+  @Get(":ticker/rag/query")
+  queryRag(@Param("ticker") ticker: string, @Query("q") q: string) {
+    return this.stocksService.queryRag(ticker, q ?? "");
+  }
+
+  @ApiOperation({
+    summary: "Evaluation qualite du RAGAgent",
+    description:
+      "Ingere si besoin puis evalue une requete standard (corpus, pertinence, ancrage, tracabilite) pour la page Metriques des agents.",
+  })
+  @ApiParam({ name: "ticker", example: "MSFT", description: "Symbole boursier a evaluer" })
+  @ApiOkResponse({ type: EvaluationReportDto })
+  @Get(":ticker/rag/evaluation")
+  getRagEvaluation(@Param("ticker") ticker: string) {
+    return this.stocksService.getRagEvaluation(ticker);
   }
 
   @ApiOperation({

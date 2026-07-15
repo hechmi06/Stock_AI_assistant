@@ -16,7 +16,7 @@ Agents deja implementes :
 | `TechnicalAgent` | Fait | Calcule RSI, moyennes mobiles, volatilite, tendance, supports/resistances |
 | `NewsAgent` | Fait | Recupere les actualites, deduplique les articles, analyse le sentiment via SLM |
 | `RiskAgent` | Fait | Combine MarketData + Technical + News pour produire un diagnostic de risque |
-| `RAGAgent` | Pas encore fait | Analysera les documents financiers PDF/HTML |
+| `RAGAgent` | Fait | Indexe les 10-K/10-Q SEC EDGAR et repond aux questions avec passages sources |
 | `SynthesisAgent` | Pas encore fait | Produira la synthese finale et la recommandation simulee |
 | Orchestrateur LangGraph | Pas encore fait | Appellera les agents dans le bon ordre selon la question utilisateur |
 
@@ -393,6 +393,10 @@ quatre agents :
   coherence de la confiance, **dimension news active** (le sentiment est bien
   exploite), preuves des risques, risques explicables, confiance justifiee,
   erreurs maitrisees, resume SLM.
+- **RAGAgent** (9 metriques) : disponibilite, validite du statut, corpus indexe,
+  passages recuperes, **pertinence de la recherche** (score cosinus), presence
+  de la reponse, **ancrage** (citations `[n]`), tracabilite des passages vers un
+  depot SEC, erreurs maitrisees.
 
 Chaque metrique renvoie `name`, `score` (0-1), `passed`, `message` ;
 l'agregat donne `total_score` (0-100), `grade` (`excellent` / `good` /
@@ -402,11 +406,12 @@ l'agregat donne `total_score` (0-100), `grade` (`excellent` / `good` /
   `--agent {market-data,technical,news,risk}` pour les autres) ;
 - Endpoints : `GET /agents/market-data/{ticker}/evaluation`,
   `GET /agents/technical/{ticker}/evaluation`,
-  `GET /agents/news/{ticker}/evaluation` et
-  `GET /agents/risk/{ticker}/evaluation` ;
+  `GET /agents/news/{ticker}/evaluation`,
+  `GET /agents/risk/{ticker}/evaluation` et
+  `GET /agents/rag/{ticker}/evaluation` ;
 - UI : onglet **Dashboard** du frontend = page "Metriques des agents",
   avec un selecteur d'agent (MarketDataAgent / TechnicalAgent / NewsAgent /
-  RiskAgent) et un selecteur de ticker.
+  RiskAgent / RAGAgent) et un selecteur de ticker.
 
 Dernier resultat mesure (MarketDataAgent) : score moyen 94.1/100, grade
 `excellent`, 11/11 PASS.
@@ -744,6 +749,8 @@ technical_summary
 Role :
 
 - recuperer les actualites recentes (outil MCP `news/{ticker}` : FMP + Yahoo RSS + Finnhub + Google News RSS (gratuit) + NewsData.io en parallele, deduplication par titre, plafond de 6 articles par source, cache 10 min) ;
+- **filtrer la pertinence** : un article est ecarte s'il ne mentionne ni le ticker ni un token du nom de societe (dans le titre ou le resume). Actif quand le nom est fourni (le RiskAgent le passe depuis le profil ; sur l'endpoint direct via `?name=Tesla`). Un garde-fou conserve la liste brute si le filtre vide tout ;
+- **extraction du texte d'article** (opt-in `NEWS_EXTRACT_CONTENT=true`) : pour les 6 articles les plus recents, le mcp-server telecharge la page et extrait le texte principal (`content`) via `trafilatura` ; le SLM juge alors le sentiment sur ce texte plutot que sur le seul titre+resume. Degrade en silence (paywall, anti-bot, trafilatura absent) en retombant sur le resume ;
 - analyser le sentiment global (label + score entre -1 et 1) et le sentiment de chaque article via le SLM Nebius (meme modele que les autres agents, `NEBIUS_MODEL`) ;
 - detecter les evenements importants (resultats, M&A, proces, lancements) ;
 - memoriser : memoire documentaire SQLite (runs + articles dedupliques + historique de sentiment) et faits news dans le Knowledge Graph (`has_news_sentiment`, `affected_by_event`, `news_from`) ;
@@ -781,37 +788,54 @@ component_status
 slm_summary
 ```
 
-### Etape 5 - RAGAgent
+### Etape 5 - RAGAgent (fait)
+
+Statut : fait (ingestion SEC EDGAR + embeddings Nebius + Qdrant + reponse sourcee).
 
 Role :
 
-- interroger les documents financiers ;
-- lire rapports annuels, trimestriels, communiques, presentations investisseurs ;
-- retourner des passages pertinents avec sources.
+- indexer les documents financiers officiels US (10-K / 10-Q via SEC EDGAR) ;
+- repondre a une question en recherchant les passages pertinents ;
+- retourner une reponse sourcee (citations `[1]`, `[2]`) sans inventer.
 
-Pipeline prevu :
+Pipeline reel :
 
 ```txt
-PDF / HTML
+ticker
    v
-Extraction texte
+[MCP] SEC EDGAR : ticker -> CIK -> 10-K/10-Q -> texte (HTML nettoye)
    v
-Chunks
+Chunking (filtre anti-bruit XBRL, cap 120 chunks/doc)
    v
-Embeddings
+Embeddings Nebius (Qwen/Qwen3-Embedding-8B, dim 4096)
    v
-Base vectorielle
+Qdrant (mode local embarque, upsert idempotent par ticker)
    v
-Recherche
+Recherche filtree par ticker
    v
-Reponse sourcee
+Synthese SLM sourcee (Qwen3-235B-Instruct, NEBIUS_MODEL_RAG)
 ```
 
-Technologies possibles :
+Technologies retenues :
 
-- LangChain ou LlamaIndex ;
-- ChromaDB, FAISS ou Qdrant ;
-- embeddings locaux ou OpenAI embeddings.
+- base vectorielle : **Qdrant** (mode local, chemin `data/qdrant`, sans serveur ;
+  serveur possible via `QDRANT_URL`) ;
+- embeddings : **Nebius** `Qwen/Qwen3-Embedding-8B` (`NEBIUS_EMBEDDING_MODEL`) ;
+- synthese : modele instruct `Qwen/Qwen3-235B-A22B-Instruct-2507` (`NEBIUS_MODEL_RAG`,
+  non-thinking ; alternative premium `deepseek-ai/DeepSeek-V4-Pro`).
+
+Endpoints :
+
+```txt
+POST http://localhost:8000/agents/rag/MSFT/ingest?limit=2
+GET  http://localhost:8000/agents/rag/MSFT/query?q=Quels sont les risques ?
+GET  http://localhost:8000/agents/rag/MSFT/evaluation
+POST http://localhost:3000/api/stocks/MSFT/rag/ingest
+GET  http://localhost:3000/api/stocks/MSFT/rag/query?q=...
+```
+
+Config `.env` : `SEC_USER_AGENT` (contact requis par SEC), `NEBIUS_EMBEDDING_MODEL`,
+`NEBIUS_MODEL_RAG`, `QDRANT_PATH` (defaut `data/qdrant`). Dependance : `qdrant-client`.
 
 ### Etape 6 - SynthesisAgent
 
@@ -1018,12 +1042,13 @@ Raccourcis populaires pour les metriques : AAPL, MSFT, NVDA, TSLA, GOOGL, AMZN, 
 
 ## Decision actuelle
 
-`MarketDataAgent`, `TechnicalAgent`, `NewsAgent` et `RiskAgent` sont valides.
+`MarketDataAgent`, `TechnicalAgent`, `NewsAgent`, `RiskAgent` et `RAGAgent` sont valides.
 
 La prochaine etape logique est :
 
 ```txt
-Implementer RAGAgent (documents financiers)
+Implementer SynthesisAgent (synthese finale multi-agents)
 ```
 
-Il beneficiera du knowledge graph commun deja alimente par les agents precedents.
+Il combinera les sorties des cinq agents (dont les passages sources du RAGAgent)
+et beneficiera du knowledge graph commun deja alimente par les agents precedents.
