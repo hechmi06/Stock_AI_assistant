@@ -534,14 +534,6 @@ export function App() {
                     </div>
 
                     <div className="market-table">
-                      <div className="market-head">
-                        <span>TITRE</span>
-                        <span className="num">DERNIER</span>
-                        <span className="num">VAR. J-1</span>
-                        <span className="num">HAUT</span>
-                        <span className="num">BAS</span>
-                        <span className="num">VOLUME</span>
-                      </div>
                       {dashboard.rows.map((row) => (
                         <button
                           className={`market-row ${row.symbol === selectedSymbol ? "selected-row" : ""}`}
@@ -549,26 +541,30 @@ export function App() {
                           type="button"
                           onClick={() => setSelectedSymbol(row.symbol)}
                         >
-                          <span>
-                            <strong>{row.symbol}</strong>
-                            <small>{row.name}</small>
-                          </span>
-                          <span className="num last-price">
-                            {priceFormatter.format(row.mid)}
-                            <small className="bid-ask">
-                              {priceFormatter.format(row.bid)} / {priceFormatter.format(row.ask)}
-                            </small>
-                          </span>
-                          <span className="num">
+                          <div className="market-row-left">
+                            <img
+                              src={`https://financialmodelingprep.com/image-stock/${row.symbol}.png`}
+                              onError={(e) => { 
+                                e.currentTarget.onerror = null; 
+                                e.currentTarget.src = `https://ui-avatars.com/api/?name=${row.symbol}&background=random&color=fff&rounded=true&bold=true`; 
+                              }}
+                              alt={row.symbol}
+                              width={28}
+                              height={28}
+                              style={{ borderRadius: "50%", flexShrink: 0, backgroundColor: "#fff", objectFit: "contain" }}
+                            />
+                            <div className="market-row-left-text">
+                              <strong>{row.symbol}</strong>
+                              <small style={{ color: "var(--text-muted)", fontSize: "0.75rem", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", maxWidth: "120px" }}>{row.name}</small>
+                            </div>
+                          </div>
+                          <div className="market-row-right">
+                            <strong style={{ fontSize: "1.05rem", fontFamily: "'JetBrains Mono', monospace" }}>${priceFormatter.format(row.mid)}</strong>
                             <span className={`var-badge ${row.variation >= 0 ? "up" : "down"}`}>
-                              {row.variation >= 0 ? "▲" : "▼"}{" "}
                               {row.variation > 0 ? "+" : ""}
-                              {row.variation.toFixed(2)}%
+                              {row.variation.toFixed(2)}% {row.variation >= 0 ? "↑" : "↓"}
                             </span>
-                          </span>
-                          <span className="num">{formatPrice(row.high)}</span>
-                          <span className="num">{formatPrice(row.low)}</span>
-                          <span className="num muted">{formatVolume(row.volume)}</span>
+                          </div>
                         </button>
                       ))}
                     </div>
@@ -591,6 +587,7 @@ export function App() {
                       </strong>
                     </div>
                     <div className="position-card-list">
+
                       {[
                         // positions du ticker sélectionné en premier
                         ...dashboard.positions.filter((p) => p.symbol === selectedSymbol),

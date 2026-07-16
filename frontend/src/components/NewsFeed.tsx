@@ -1,4 +1,4 @@
-import { ExternalLink, Newspaper, RefreshCw } from "lucide-react";
+import { ExternalLink, Newspaper, RefreshCw, ChevronRight, BrainCircuit } from "lucide-react";
 import { useEffect, useState } from "react";
 import { fetchNews } from "../services/analysisApi";
 import type { NewsResult, NewsSentiment } from "../types";
@@ -77,14 +77,22 @@ export function NewsFeed({ ticker }: { ticker: string }) {
       {error ? <div className="news-error">{error}</div> : null}
       {loading && !news ? <div className="news-loading">Chargement des actualités…</div> : null}
 
-      {news?.slm_summary?.summary ? <p className="news-summary">{news.slm_summary.summary}</p> : null}
+      {news?.slm_summary?.summary ? (
+        <div className="news-summary-box">
+          <div className="news-summary-header">
+            <BrainCircuit size={14} /> Résumé IA
+          </div>
+          <p className="news-summary">{news.slm_summary.summary}</p>
+        </div>
+      ) : null}
 
       {news?.key_events.length ? (
-        <div className="news-events">
-          {news.key_events.map((event) => (
-            <span className="news-event-chip" key={event}>
-              {event}
-            </span>
+        <div className="news-events-list">
+          {news.key_events.map((event, idx) => (
+            <div className="news-event-item" key={idx}>
+              <ChevronRight size={14} className="news-event-icon" />
+              <span>{event}</span>
+            </div>
           ))}
         </div>
       ) : null}
