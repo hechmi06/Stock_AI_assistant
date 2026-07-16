@@ -17,6 +17,7 @@ Agents deja implementes :
 | `NewsAgent` | Fait | Recupere les actualites, deduplique les articles, analyse le sentiment via SLM |
 | `RiskAgent` | Fait | Combine MarketData + Technical + News pour produire un diagnostic de risque |
 | `RAGAgent` | Fait | Indexe les 10-K/10-Q SEC EDGAR et repond aux questions avec passages sources |
+| `SocialSentimentAgent` | Planifie | Analysera Reddit/X comme signal social separe des news officielles |
 | `SynthesisAgent` | Pas encore fait | Produira la synthese finale et la recommandation simulee |
 | Orchestrateur LangGraph | Pas encore fait | Appellera les agents dans le bon ordre selon la question utilisateur |
 
@@ -337,6 +338,7 @@ Types de memoire prevus pour les prochains agents :
 | `NewsAgent` | Documentaire + Knowledge Graph | News, evenements, sentiment (fait) |
 | `RAGAgent` | Vectorielle + Knowledge Graph | Passages des rapports financiers |
 | `RiskAgent` | Knowledge Graph + analytique | Risques croises donnees/news/documents |
+| `SocialSentimentAgent` | Documentaire courte duree + Knowledge Graph | Posts Reddit/X, volume de mentions, sentiment social |
 | `SynthesisAgent` | Session + Knowledge Graph | Combinaison des resultats |
 | Orchestrateur | Etat / workflow | Ordre et statut des agents appeles |
 
@@ -387,16 +389,18 @@ quatre agents :
 - **NewsAgent** (11 metriques) : disponibilite, validite du statut, couverture
   des sources, nombre d'articles, fraicheur, resumes, sentiment global,
   sentiment par article, evenements, erreurs maitrisees, resume SLM.
-- **RiskAgent** (12 metriques) : disponibilite, validite du statut, couverture
+- **RiskAgent** (13 metriques) : disponibilite, validite du statut, couverture
   des agents amont, coherence score/niveau de risque, **purete du risk_score**
   (les problemes de qualite des donnees n'entrent pas dans le risque),
   coherence de la confiance, **dimension news active** (le sentiment est bien
-  exploite), preuves des risques, risques explicables, confiance justifiee,
-  erreurs maitrisees, resume SLM.
-- **RAGAgent** (9 metriques) : disponibilite, validite du statut, corpus indexe,
-  passages recuperes, **pertinence de la recherche** (score cosinus), presence
-  de la reponse, **ancrage** (citations `[n]`), tracabilite des passages vers un
-  depot SEC, erreurs maitrisees.
+  exploite), **dimension documentaire active** (les risques SEC/RAG sont bien
+  pris en compte), preuves des risques, risques explicables, confiance
+  justifiee, erreurs maitrisees, resume SLM.
+- **RAGAgent** (13 metriques) : disponibilite, validite du statut, corpus indexe,
+  metriques RAGAS proxy (`faithfulness`, `answer_relevance`, `context_recall`,
+  `context_precision`), passages recuperes, **pertinence de la recherche**
+  (score cosinus), presence de la reponse, **ancrage** (citations `[n]`),
+  tracabilite des passages vers un depot SEC, erreurs maitrisees.
 
 Chaque metrique renvoie `name`, `score` (0-1), `passed`, `message` ;
 l'agregat donne `total_score` (0-100), `grade` (`excellent` / `good` /
@@ -421,7 +425,7 @@ Dernier resultat mesure (MarketDataAgent) : score moyen 94.1/100, grade
 `RiskAgent` combine les sorties des agents deja valides :
 
 ```txt
-MarketDataAgent + TechnicalAgent + NewsAgent
+MarketDataAgent + TechnicalAgent + NewsAgent + RAGAgent
         v
 RiskAgent
 ```
@@ -447,9 +451,9 @@ Important :
 
 - `risk_score` mesure le risque detecte sur le titre, sur une echelle `0-100` ;
 - il est **pondere par categorie** (`app/agents/risk_scoring.py`) : chaque
-  categorie a une contribution maximale (fondamental 30, technique 25, news 25,
-  marche 20) et sature au-dela de quelques risques serieux, ce qui evite qu'une
-  pluie de petits risques ne domine le diagnostic ;
+  categorie a une contribution maximale (fondamental 25, documentaire 25,
+  technique 20, news 20, marche 10) et sature au-dela de quelques risques
+  serieux, ce qui evite qu'une pluie de petits risques ne domine le diagnostic ;
 - `risk_score_breakdown` detaille la contribution de chaque categorie ;
 - `data_confidence_score` mesure la fiabilite des donnees utilisees, aussi sur `0-100` ;
 - un titre peut avoir un `risk_score` faible mais une `data_confidence_score` faible si les sources sont limitees ;
@@ -460,12 +464,15 @@ Risques detectes actuellement :
 - risque technique : volatilite, tendance, RSI, score technique faible ;
 - risque fondamental : valorisation, dette, cash-flow operationnel negatif ;
 - risque news : sentiment negatif ou mixte ;
-- risque `data_quality` : source partielle, API rate-limited, news partielles, source externe indisponible.
+- risque documentaire : reglementation/antitrust, litiges, cybersecurite,
+  IA, supply chain, concurrence, extraits des rapports SEC via RAG ;
+- risque `data_quality` : source partielle, API rate-limited, news partielles,
+  source externe indisponible, couverture RAG limitee.
 
 Deux invariants de conception (corriges et verrouilles par l'evaluation) :
 
 - **le `risk_score` ne mesure que le risque intrinseque du titre** (marche,
-  technique, fondamental, news). Les risques `data_quality` restent listes pour
+  technique, fondamental, news, documentaire). Les risques `data_quality` restent listes pour
   la transparence mais ne gonflent plus le score : ils reduisent uniquement le
   `data_confidence_score`. Sinon un titre sain servi pendant un rate-limit de
   source secondaire serait faussement classe plus risque ;
@@ -764,7 +771,49 @@ Endpoints :
 
 Note : si la cle FMP n'a pas acces aux news (plan gratuit), l'agent fonctionne sur Yahoo RSS + Finnhub + Google News RSS + NewsData.io (warnings non bloquants). Cles dans le `.env` racine : `FINNHUB_API_KEY`, `NEWSDATA_API_KEY` (alternative Google News, format `pub_...`).
 
-### Etape 4 - RiskAgent
+### Etape 4 - SocialSentimentAgent (planifie)
+
+Statut : planifie, pas encore implemente.
+
+Role :
+
+- recuperer des signaux sociaux depuis Reddit et eventuellement X/Twitter ;
+- mesurer le volume de mentions autour d'un ticker ;
+- analyser le sentiment social separement du sentiment news ;
+- detecter les themes recurrents : boycott, plainte client, rumeur, incident produit, euphorie speculative ;
+- produire un score de confiance propre aux donnees sociales.
+
+Important : cet agent ne doit pas etre melange directement avec `NewsAgent`.
+Les reseaux sociaux sont plus bruites, plus manipulables et moins fiables que
+les sources financieres classiques. Ils doivent etre traites comme un **signal
+de perception du marche**, pas comme une source de verite.
+
+Sortie attendue :
+
+```txt
+social_sentiment_label
+social_sentiment_score
+mentions_count
+trending_topics
+social_confidence_score
+sources_used
+warnings
+```
+
+Impact prevu sur `RiskAgent` :
+
+- faible a moyen poids dans le score final ;
+- activation seulement si le volume est suffisant ;
+- penalite de confiance si les posts sont peu nombreux, tres repetitifs ou non sources ;
+- risque social ajoute seulement si le signal est fort et coherent.
+
+Sources envisagees :
+
+- Reddit API / Pushshift-like alternatives si disponibles ;
+- X/Twitter API si une cle officielle est disponible ;
+- GDELT ou autres signaux publics comme alternative moins dependante des reseaux sociaux.
+
+### Etape 5 - RiskAgent
 
 Statut : fait.
 
@@ -788,7 +837,7 @@ component_status
 slm_summary
 ```
 
-### Etape 5 - RAGAgent (fait)
+### Etape 6 - RAGAgent (fait)
 
 Statut : fait (ingestion SEC EDGAR + embeddings Nebius + Qdrant + reponse sourcee).
 
@@ -837,7 +886,7 @@ GET  http://localhost:3000/api/stocks/MSFT/rag/query?q=...
 Config `.env` : `SEC_USER_AGENT` (contact requis par SEC), `NEBIUS_EMBEDDING_MODEL`,
 `NEBIUS_MODEL_RAG`, `QDRANT_PATH` (defaut `data/qdrant`). Dependance : `qdrant-client`.
 
-### Etape 6 - SynthesisAgent
+### Etape 7 - SynthesisAgent
 
 Role :
 
@@ -859,7 +908,7 @@ confidence_level
 final_summary
 ```
 
-### Etape 7 - Orchestrateur IA
+### Etape 8 - Orchestrateur IA
 
 Role :
 
@@ -875,6 +924,7 @@ Etape 1 - parallele :
   MarketDataAgent
   NewsAgent
   RAGAgent
+  SocialSentimentAgent (quand implemente)
 
 Etape 2 - sequentiel :
   TechnicalAgent
@@ -1050,5 +1100,10 @@ La prochaine etape logique est :
 Implementer SynthesisAgent (synthese finale multi-agents)
 ```
 
-Il combinera les sorties des cinq agents (dont les passages sources du RAGAgent)
-et beneficiera du knowledge graph commun deja alimente par les agents precedents.
+Il combinera les sorties des agents deja valides (dont les passages sources du
+RAGAgent) et beneficiera du knowledge graph commun deja alimente par les agents
+precedents.
+
+`SocialSentimentAgent` est ajoute au planning comme evolution ulterieure :
+il analysera Reddit/X comme signal social separe, avec un score de confiance
+dedie, sans remplacer les news officielles.

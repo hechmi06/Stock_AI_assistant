@@ -14,6 +14,7 @@ from __future__ import annotations
 import os
 import re
 import uuid
+from pathlib import Path
 
 from .mcp_client import McpClient
 from .nebius_client import NebiusClient
@@ -44,8 +45,12 @@ def _qdrant_location() -> dict[str, str]:
     url = os.getenv("QDRANT_URL", "").strip()
     if url:
         return {"url": url}
-    path = os.getenv("QDRANT_PATH", "").strip() or os.path.join("data", "qdrant")
-    return {"path": path}
+    project_root = Path(__file__).resolve().parents[3]
+    configured_path = os.getenv("QDRANT_PATH", "").strip()
+    path = Path(configured_path) if configured_path else project_root / "data" / "qdrant"
+    if not path.is_absolute():
+        path = project_root / path
+    return {"path": str(path)}
 
 
 def _chunk_text(text: str) -> list[str]:
@@ -70,15 +75,64 @@ def _chunk_text(text: str) -> list[str]:
 def _is_narrative(chunk: str) -> bool:
     if len(chunk) < 200:
         return False
+    lowered = chunk.lower()
     letters = sum(1 for ch in chunk if ch.isalpha())
     if letters / len(chunk) < 0.6:  # trop de chiffres/symboles (tableaux, XBRL)
         return False
     words = re.findall(r"[A-Za-z]{3,}", chunk)
     if len(words) < 30:
         return False
-    if "fasb.org" in chunk or "xbrl" in chunk.lower():
+    if _looks_like_xbrl_noise(chunk, lowered):
         return False
     return True
+
+
+def _looks_like_xbrl_noise(chunk: str, lowered: str) -> bool:
+    xbrl_markers = [
+        "fasb.org",
+        "xbrl",
+        "us-gaap",
+        "dei:",
+        "srt:",
+        "iso4217",
+        "xbrli",
+        "xbrldi",
+        "nondesignatedmember",
+        "creditconcentrationriskmember",
+    ]
+    if any(marker in lowered for marker in xbrl_markers):
+        return True
+    namespace_tokens = re.findall(r"\b[a-z]{2,12}:[A-Za-z][A-Za-z0-9_-]+", chunk)
+    if len(namespace_tokens) >= 3:
+        return True
+    if len(re.findall(r"\b[A-Za-z]+Member\b", chunk)) >= 8:
+        return True
+    if len(re.findall(r"\b\d{10}\b", chunk)) >= 4:
+        return True
+    return False
+
+
+def _query_variants(question: str) -> list[str]:
+    """Construit quelques requetes de recherche pour couvrir les questions mixtes."""
+    raw = question.strip()
+    lowered = raw.lower()
+    variants = [raw]
+
+    if any(term in lowered for term in ("risk", "risque", "risques", "facteur", "facteurs")):
+        variants.append("risk factors regulatory competition operational financial risks")
+    if any(term in lowered for term in ("segment", "segments", "activite", "activité", "business")):
+        variants.append("business segments products services revenue by segment")
+    if any(term in lowered for term in ("revenue", "chiffre", "affaires", "sales", "ventes")):
+        variants.append("revenue sales growth financial performance")
+
+    unique: list[str] = []
+    seen: set[str] = set()
+    for variant in variants:
+        key = variant.lower()
+        if key not in seen:
+            seen.add(key)
+            unique.append(variant)
+    return unique[:4]
 
 
 class RagAgent:
@@ -171,6 +225,10 @@ class RagAgent:
                 )
                 for index, (chunk, vector) in enumerate(zip(chunks, vectors))
             ]
+            try:
+                self._delete_existing_chunks(symbol, url)
+            except Exception as error:
+                warnings.append(f"Ancienne version du document non supprimee avant upsert: {error}")
             self._qdrant().upsert(collection_name=_collection_name(), points=points)
             documents.append(
                 RagDocument(
@@ -215,18 +273,57 @@ class RagAgent:
                 errors=[f"Aucun document indexe pour {symbol}. Lancer l'ingestion d'abord."],
             )
 
+        queries = _query_variants(question)
         try:
-            query_vector = self.slm_client.embed([question])[0]
+            query_vectors = self.slm_client.embed(queries)
         except Exception as error:
             return RagResult(ticker=symbol, question=question, status="failed", indexed_chunks=indexed, errors=[f"Embedding question echoue: {error}"])
 
-        hits = self._qdrant().search(
-            collection_name=_collection_name(),
-            query_vector=query_vector,
-            query_filter=Filter(must=[FieldCondition(key="ticker", match=MatchValue(value=symbol))]),
-            limit=max(1, top_k),
-            with_payload=True,
-        )
+        top_k = max(1, min(top_k, 12))
+        query_filter = Filter(must=[FieldCondition(key="ticker", match=MatchValue(value=symbol))])
+        per_query_limit = top_k if len(query_vectors) == 1 else max(3, min(top_k, (top_k + len(query_vectors) - 1) // len(query_vectors) + 2))
+        grouped_hits = []
+        hits_by_key = {}
+        for query_vector in query_vectors:
+            group = self._qdrant().search(
+                collection_name=_collection_name(),
+                query_vector=query_vector,
+                query_filter=query_filter,
+                limit=per_query_limit,
+                with_payload=True,
+            )
+            grouped_hits.append(group)
+            for hit in group:
+                key = self._hit_key(hit)
+                previous = hits_by_key.get(key)
+                if previous is None or float(hit.score) > float(previous.score):
+                    hits_by_key[key] = hit
+
+        hits = []
+        selected_keys: set[str] = set()
+        per_variant_quota = 2 if len(grouped_hits) > 1 and top_k >= 4 else 1
+        for group in grouped_hits:
+            added_for_group = 0
+            for hit in sorted(group, key=lambda item: float(item.score), reverse=True):
+                key = self._hit_key(hit)
+                if key in selected_keys:
+                    continue
+                hits.append(hit)
+                selected_keys.add(key)
+                added_for_group += 1
+                if added_for_group >= per_variant_quota or len(hits) >= top_k:
+                    break
+            if len(hits) >= top_k:
+                break
+
+        remaining_hits = sorted(hits_by_key.values(), key=lambda item: float(item.score), reverse=True)
+        for hit in remaining_hits:
+            if len(hits) >= top_k:
+                break
+            key = self._hit_key(hit)
+            if key not in selected_keys:
+                hits.append(hit)
+                selected_keys.add(key)
 
         passages = [
             RagPassage(
@@ -264,6 +361,14 @@ class RagAgent:
             vectors.extend(self.slm_client.embed(chunks[start : start + EMBED_BATCH]))
         return vectors
 
+    def _hit_key(self, hit) -> str:
+        payload = hit.payload or {}
+        url = payload.get("url")
+        chunk_index = payload.get("chunk_index")
+        if url is not None and chunk_index is not None:
+            return f"{url}#{chunk_index}"
+        return str(getattr(hit, "id", id(hit)))
+
     def _count_indexed(self, ticker: str) -> int:
         try:
             from qdrant_client.models import FieldCondition, Filter, MatchValue
@@ -276,6 +381,20 @@ class RagAgent:
             return int(result.count)
         except Exception:
             return 0
+
+    def _delete_existing_chunks(self, ticker: str, url: str) -> None:
+        from qdrant_client.models import FieldCondition, Filter, MatchValue
+
+        self._qdrant().delete(
+            collection_name=_collection_name(),
+            points_selector=Filter(
+                must=[
+                    FieldCondition(key="ticker", match=MatchValue(value=ticker)),
+                    FieldCondition(key="url", match=MatchValue(value=url)),
+                ]
+            ),
+            wait=True,
+        )
 
     def _remember(self, ticker: str, filing: dict) -> None:
         if self.graph is None:

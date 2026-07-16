@@ -48,12 +48,13 @@ app = FastAPI(title="Stock AI Assistant Backend", version="0.1.0")
 market_data_agent = MarketDataAgent()
 technical_agent = TechnicalAgent(market_data_agent=market_data_agent)
 news_agent = NewsAgent()
+rag_agent = RagAgent(graph=getattr(market_data_agent.memory, "graph", None))
 risk_agent = RiskAgent(
     market_data_agent=market_data_agent,
     technical_agent=technical_agent,
     news_agent=news_agent,
+    rag_agent=rag_agent,
 )
-rag_agent = RagAgent(graph=getattr(market_data_agent.memory, "graph", None))
 
 
 class Metric(BaseModel):
@@ -385,19 +386,19 @@ def ingest_rag_documents(ticker: str, limit: int = 2) -> RagIngestResult:
 
 
 @app.get("/agents/rag/{ticker}/query", response_model=RagResult)
-def query_rag_documents(ticker: str, q: str) -> RagResult:
+def query_rag_documents(ticker: str, q: str, top_k: int = 5, with_slm: bool = True) -> RagResult:
     """Interroge les documents financiers indexes et renvoie une reponse sourcee."""
-    return rag_agent.query(ticker, q)
+    return rag_agent.query(ticker, q, top_k=top_k, with_slm=with_slm)
 
 
 @app.get("/agents/rag/{ticker}/evaluation", response_model=EvaluationReport)
 def evaluate_rag_agent(ticker: str) -> EvaluationReport:
     """Evaluation qualite du RAGAgent : ingere si besoin puis evalue une requete standard."""
-    question = "What are the main risk factors and business segments of the company?"
-    result = rag_agent.query(ticker, question)
+    question = "Quels sont les principaux facteurs de risque et les segments d'activite de l'entreprise ?"
+    result = rag_agent.query(ticker, question, top_k=8)
     if result.status == "failed" and result.indexed_chunks == 0:
         rag_agent.ingest(ticker, limit=1)
-        result = rag_agent.query(ticker, question)
+        result = rag_agent.query(ticker, question, top_k=8)
     return evaluate_rag(result)
 
 

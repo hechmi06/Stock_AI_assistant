@@ -130,7 +130,14 @@ export async function getSecFilings(
 function htmlToText(html: string): string {
   return html
     .replace(/<!--[\s\S]*?-->/g, " ")
+    .replace(/<ix:hidden[^>]*>[\s\S]*?<\/ix:hidden>/gi, " ")
+    .replace(/<ix:header[^>]*>[\s\S]*?<\/ix:header>/gi, " ")
+    .replace(/<xbrli:context[^>]*>[\s\S]*?<\/xbrli:context>/gi, " ")
+    .replace(/<xbrli:unit[^>]*>[\s\S]*?<\/xbrli:unit>/gi, " ")
+    .replace(/<link:[^>]*>[\s\S]*?<\/link:[^>]*>/gi, " ")
+    .replace(/<xbrldi:[^>]*>[\s\S]*?<\/xbrldi:[^>]*>/gi, " ")
     .replace(/<(script|style|head)[^>]*>[\s\S]*?<\/\1>/gi, " ")
+    .replace(/<[^>]+style=["'][^"']*display\s*:\s*none[^"']*["'][^>]*>[\s\S]*?<\/[^>]+>/gi, " ")
     .replace(/<\/(p|div|tr|table|li|h[1-6]|br)>/gi, "\n")
     .replace(/<[^>]+>/g, " ")
     .replace(/&nbsp;/gi, " ")

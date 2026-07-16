@@ -82,8 +82,15 @@ const GRADE_LABELS: Record<EvaluationGrade, string> = {
   poor: "Insuffisant",
 };
 
+const RAGAS_LABELS: Record<string, string> = {
+  faithfulness: "Faithfulness",
+  answer_relevance: "Answer Relevance",
+  context_recall: "Context Recall",
+  context_precision: "Context Precision",
+};
+
 function metricLabel(name: string): string {
-  return METRIC_LABELS[name] ?? name;
+  return RAGAS_LABELS[name] ?? METRIC_LABELS[name] ?? name;
 }
 
 export function AgentMetrics() {

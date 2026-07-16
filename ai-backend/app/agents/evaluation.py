@@ -643,7 +643,7 @@ def evaluate_news(result: NewsResult) -> EvaluationReport:
 
 # Seuils repris de RiskAgent pour verifier la coherence score <-> niveau.
 RISK_LEVEL_HIGH_MIN = 61
-RISK_LEVEL_MEDIUM_MIN = 31
+RISK_LEVEL_MEDIUM_MIN = 30
 CONFIDENCE_LEVEL_HIGH_MIN = 80
 CONFIDENCE_LEVEL_MEDIUM_MIN = 55
 
@@ -666,7 +666,7 @@ def _risk_agent_availability(result: RiskResult) -> MetricResult:
 
 def _risk_status_validity(result: RiskResult) -> MetricResult:
     snapshot = result.component_status
-    statuses = [snapshot.market_data_status, snapshot.technical_status, snapshot.news_status]
+    statuses = [snapshot.market_data_status, snapshot.technical_status, snapshot.news_status, snapshot.rag_status]
     all_failed = all(status == "failed" for status in statuses)
     # Le RiskAgent ne doit etre 'failed' que si tous les agents amont ont echoue.
     coherent = (result.status == "failed") == all_failed
@@ -688,7 +688,7 @@ def _risk_status_validity(result: RiskResult) -> MetricResult:
 
 def _risk_component_coverage(result: RiskResult) -> MetricResult:
     snapshot = result.component_status
-    statuses = [snapshot.market_data_status, snapshot.technical_status, snapshot.news_status]
+    statuses = [snapshot.market_data_status, snapshot.technical_status, snapshot.news_status, snapshot.rag_status]
     score = sum(_COMPONENT_HEALTH.get(status, 0.0) for status in statuses) / len(statuses)
     healthy = sum(1 for status in statuses if status == "success")
     return MetricResult(
@@ -696,9 +696,9 @@ def _risk_component_coverage(result: RiskResult) -> MetricResult:
         score=_clamp01(score),
         passed=score >= 0.5,
         message=(
-            f"{healthy}/3 agents amont en succes "
+            f"{healthy}/4 agents amont en succes "
             f"(market={snapshot.market_data_status}, technical={snapshot.technical_status}, "
-            f"news={snapshot.news_status})."
+            f"news={snapshot.news_status}, rag={snapshot.rag_status})."
         ),
     )
 
@@ -802,6 +802,29 @@ def _risk_news_dimension_active(result: RiskResult) -> MetricResult:
             "Sentiment news pris en compte dans le risque."
             if sentiment_used
             else "NewsAgent 'partial' sans sentiment : dimension news probablement neutralisee."
+        ),
+    )
+
+
+def _risk_documentary_dimension_active(result: RiskResult) -> MetricResult:
+    rag_status = result.component_status.rag_status
+    if rag_status == "failed":
+        return MetricResult(
+            name="documentary_dimension_active",
+            score=0.0,
+            passed=False,
+            message="RAGAgent en echec : risques documentaires indisponibles.",
+        )
+    has_documentary_risk = any(risk.category == "documentary" for risk in result.risks)
+    ok = rag_status == "success" and has_documentary_risk
+    return MetricResult(
+        name="documentary_dimension_active",
+        score=1.0 if ok else 0.5 if rag_status == "success" else 0.3,
+        passed=ok,
+        message=(
+            "Risques documentaires issus du RAG pris en compte."
+            if ok
+            else f"RAGAgent={rag_status}, mais aucun risque documentaire structure n'a ete ajoute."
         ),
     )
 
@@ -913,6 +936,7 @@ def evaluate_risk(result: RiskResult) -> EvaluationReport:
         _risk_score_purity(result),
         _risk_confidence_validity(result),
         _risk_news_dimension_active(result),
+        _risk_documentary_dimension_active(result),
         _risk_evidence_coverage(result),
         _risk_explainability(result),
         _risk_confidence_explained(result),
@@ -934,6 +958,66 @@ def evaluate_risk(result: RiskResult) -> EvaluationReport:
 RAG_PASSAGES_TARGET = 4
 RAG_RELEVANCE_MIN = 0.35  # score cosinus minimal pour un passage pertinent
 RAG_CITATION_RE = re.compile(r"\[\d+\]")
+RAGAS_PASS_MIN = 0.5
+
+RAG_STOPWORDS = {
+    "the",
+    "and",
+    "are",
+    "what",
+    "which",
+    "with",
+    "from",
+    "that",
+    "this",
+    "pour",
+    "les",
+    "des",
+    "dans",
+    "sont",
+    "quels",
+    "quelles",
+    "principaux",
+    "principales",
+    "main",
+    "company",
+    "entreprise",
+    "principal",
+    "principale",
+}
+
+RAG_KEYWORD_ALIASES = {
+    "activite": "business",
+    "activites": "business",
+    "business": "business",
+    "segment": "segment",
+    "segments": "segment",
+    "risk": "risk",
+    "risque": "risk",
+    "risques": "risk",
+    "factor": "factor",
+    "factors": "factor",
+    "facteur": "factor",
+    "facteurs": "factor",
+    "revenue": "revenue",
+    "revenues": "revenue",
+    "chiffre": "revenue",
+    "affaires": "revenue",
+    "sales": "sales",
+    "ventes": "sales",
+    "product": "product",
+    "products": "product",
+    "produit": "product",
+    "produits": "product",
+    "service": "service",
+    "services": "service",
+    "competition": "competition",
+    "concurrence": "competition",
+    "competitive": "competition",
+    "regulatory": "regulation",
+    "reglementaire": "regulation",
+    "reglementaires": "regulation",
+}
 
 
 def _rag_agent_availability(result: RagResult) -> MetricResult:
@@ -1001,6 +1085,124 @@ def _rag_retrieval_relevance(result: RagResult) -> MetricResult:
     )
 
 
+def _ragas_faithfulness(result: RagResult) -> MetricResult:
+    """Proxy RAGAS Faithfulness : les phrases de reponse sont-elles citees ?
+
+    La version exacte RAGAS utilise un LLM-as-judge pour verifier chaque claim.
+    Ici, on applique une garde automatique simple : une phrase informative doit
+    porter au moins une citation valide [n] pointant vers un passage recupere.
+    """
+    answer = result.answer or ""
+    if not answer.strip():
+        return MetricResult(name="faithfulness", score=0.0, passed=False, message="Aucune reponse a verifier.")
+
+    valid_ids = {str(index) for index in range(1, len(result.passages) + 1)}
+    sentences = [
+        sentence.strip()
+        for sentence in re.split(r"(?<=[.!?])\s+", answer)
+        if len(sentence.strip()) >= 35
+    ]
+    if not sentences:
+        return MetricResult(name="faithfulness", score=0.0, passed=False, message="Aucune phrase informative detectee.")
+
+    supported = 0
+    for sentence in sentences:
+        citations = RAG_CITATION_RE.findall(sentence)
+        cited_ids = {citation.strip("[]") for citation in citations}
+        if cited_ids & valid_ids:
+            supported += 1
+
+    score = _clamp01(supported / len(sentences))
+    return MetricResult(
+        name="faithfulness",
+        score=score,
+        passed=score >= 0.75,
+        message=f"{supported}/{len(sentences)} phrase(s) informative(s) cite(nt) un passage recupere.",
+    )
+
+
+def _ragas_answer_relevance(result: RagResult) -> MetricResult:
+    """Proxy RAGAS Answer Relevance : recouvrement lexical question/reponse."""
+    if not result.answer:
+        return MetricResult(name="answer_relevance", score=0.0, passed=False, message="Aucune reponse a comparer.")
+
+    question_terms = _rag_keywords(result.question)
+    answer_terms = _rag_keywords(result.answer)
+    if not question_terms:
+        return MetricResult(
+            name="answer_relevance",
+            score=1.0 if result.answer.strip() else 0.0,
+            passed=bool(result.answer.strip()),
+            message="Question trop courte pour extraire des mots-cles ; presence de reponse utilisee.",
+        )
+
+    overlap = question_terms & answer_terms
+    score = _clamp01(len(overlap) / len(question_terms))
+    return MetricResult(
+        name="answer_relevance",
+        score=score,
+        passed=score >= RAGAS_PASS_MIN,
+        message=f"{len(overlap)}/{len(question_terms)} mot(s)-cle(s) de la question retrouves dans la reponse.",
+    )
+
+
+def _ragas_context_recall(result: RagResult) -> MetricResult:
+    """Proxy RAGAS Context Recall sans reference gold.
+
+    Le vrai Context Recall compare les contextes a une reponse de reference.
+    Pour le MVP, on mesure si les contextes couvrent les mots-cles de la question
+    et si le retriever renvoie assez de passages exploitables.
+    """
+    if not result.passages:
+        return MetricResult(name="context_recall", score=0.0, passed=False, message="Aucun contexte recupere.")
+
+    question_terms = _rag_keywords(result.question)
+    context_terms = _rag_keywords(" ".join(passage.text for passage in result.passages))
+    keyword_score = 1.0 if not question_terms else len(question_terms & context_terms) / len(question_terms)
+    volume_score = _clamp01(len(result.passages) / RAG_PASSAGES_TARGET)
+    score = _clamp01(0.7 * keyword_score + 0.3 * volume_score)
+    return MetricResult(
+        name="context_recall",
+        score=score,
+        passed=score >= RAGAS_PASS_MIN,
+        message=(
+            f"Couverture contexte : {len(question_terms & context_terms)}/{len(question_terms)} mot(s)-cle(s), "
+            f"{len(result.passages)} passage(s) recupere(s)."
+        ),
+    )
+
+
+def _ragas_context_precision(result: RagResult) -> MetricResult:
+    """RAGAS Context Precision approximee par precision@k sur les scores Qdrant."""
+    if not result.passages:
+        return MetricResult(name="context_precision", score=0.0, passed=False, message="Aucun contexte a evaluer.")
+
+    relevance_flags = [1 if passage.score >= RAG_RELEVANCE_MIN else 0 for passage in result.passages]
+    relevant_count = sum(relevance_flags)
+    if relevant_count == 0:
+        return MetricResult(
+            name="context_precision",
+            score=0.0,
+            passed=False,
+            message=f"0/{len(result.passages)} passage(s) au-dessus du seuil {RAG_RELEVANCE_MIN}.",
+        )
+
+    precision_sum = 0.0
+    relevant_seen = 0
+    for index, is_relevant in enumerate(relevance_flags, start=1):
+        if is_relevant:
+            relevant_seen += 1
+            precision_sum += relevant_seen / index
+
+    score = _clamp01(precision_sum / relevant_count)
+    return MetricResult(
+        name="context_precision",
+        score=score,
+        passed=score >= RAGAS_PASS_MIN,
+        message=f"{relevant_count}/{len(result.passages)} passage(s) pertinent(s), precision@k moyenne={score:.2f}.",
+    )
+
+
 def _rag_answer_present(result: RagResult) -> MetricResult:
     ok = bool(result.answer and result.answer.strip())
     return MetricResult(
@@ -1050,12 +1252,57 @@ def _rag_controlled_errors(result: RagResult) -> MetricResult:
     return MetricResult(name="controlled_errors", score=score, passed=count <= ERROR_MAX_PASS, message=message)
 
 
+def _rag_keywords(text: str) -> set[str]:
+    tokens = re.findall(r"[A-Za-zÀ-ÿ][A-Za-zÀ-ÿ'-]{2,}", text.lower())
+    keywords = set()
+    for token in tokens:
+        raw = token.strip("-'")
+        if raw in RAG_STOPWORDS:
+            continue
+        normalized = _normalize_rag_token(raw)
+        if normalized and len(normalized) >= 3:
+            keywords.add(normalized)
+    return keywords
+
+
+def _normalize_rag_token(token: str) -> str:
+    normalized = token.strip("-'").replace("é", "e").replace("è", "e").replace("ê", "e")
+    normalized = normalized.replace("à", "a").replace("â", "a").replace("î", "i").replace("ï", "i")
+    normalized = normalized.replace("ô", "o").replace("ù", "u").replace("û", "u").replace("ç", "c")
+    if normalized.endswith("s") and len(normalized) > 4:
+        singular = normalized[:-1]
+        if singular in RAG_KEYWORD_ALIASES:
+            return RAG_KEYWORD_ALIASES[singular]
+    return RAG_KEYWORD_ALIASES.get(normalized, normalized)
+
+
+def _rag_keywords(text: str) -> set[str]:
+    """Version normalisee pour les metriques RAGAS proxy."""
+    normalized_text = text.lower()
+    normalized_text = re.sub(r"\b[ldjtmcs]'", " ", normalized_text)
+    normalized_text = re.sub(r"\bri\s+sk\b", "risk", normalized_text)
+    tokens = re.findall(r"[a-z][a-z'-]{2,}", normalized_text)
+    keywords = set()
+    for token in tokens:
+        raw = token.strip("-'")
+        if raw in RAG_STOPWORDS:
+            continue
+        normalized = _normalize_rag_token(raw)
+        if normalized and len(normalized) >= 3:
+            keywords.add(normalized)
+    return keywords
+
+
 def evaluate_rag(result: RagResult) -> EvaluationReport:
     """Evalue un resultat de requete RAGAgent et renvoie un rapport complet."""
     metrics = [
         _rag_agent_availability(result),
         _rag_status_validity(result),
         _rag_corpus_indexed(result),
+        _ragas_faithfulness(result),
+        _ragas_answer_relevance(result),
+        _ragas_context_recall(result),
+        _ragas_context_precision(result),
         _rag_passages_retrieved(result),
         _rag_retrieval_relevance(result),
         _rag_answer_present(result),
