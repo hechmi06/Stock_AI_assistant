@@ -124,7 +124,7 @@ class NewsResult(BaseModel):
 
 
 RiskLevel = Literal["low", "medium", "high"]
-RiskCategory = Literal["market", "technical", "fundamental", "news", "data_quality"]
+RiskCategory = Literal["market", "technical", "fundamental", "news", "documentary", "data_quality"]
 
 
 class RiskItem(BaseModel):
@@ -140,9 +140,11 @@ class AgentRiskSnapshot(BaseModel):
     market_data_status: MarketDataStatus = "failed"
     technical_status: MarketDataStatus = "failed"
     news_status: MarketDataStatus = "failed"
+    rag_status: MarketDataStatus = "failed"
     market_data_errors: list[str] = Field(default_factory=list)
     technical_errors: list[str] = Field(default_factory=list)
     news_errors: list[str] = Field(default_factory=list)
+    rag_errors: list[str] = Field(default_factory=list)
 
 
 class RiskResult(BaseModel):

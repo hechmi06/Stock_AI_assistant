@@ -168,7 +168,7 @@ type RiskResult = {
   data_confidence_score: number;
   data_confidence_level: "low" | "medium" | "high";
   risks: Array<{
-    category: "market" | "technical" | "fundamental" | "news" | "data_quality";
+    category: "market" | "technical" | "fundamental" | "news" | "documentary" | "data_quality";
     level: "low" | "medium" | "high";
     title: string;
     description: string;
@@ -179,9 +179,11 @@ type RiskResult = {
     market_data_status: "success" | "partial" | "failed";
     technical_status: "success" | "partial" | "failed";
     news_status: "success" | "partial" | "failed";
+    rag_status: "success" | "partial" | "failed";
     market_data_errors: string[];
     technical_errors: string[];
     news_errors: string[];
+    rag_errors: string[];
   };
   warnings: string[];
   errors: string[];
@@ -464,9 +466,11 @@ export class StocksService {
           market_data_status: "failed",
           technical_status: "failed",
           news_status: "failed",
+          rag_status: "failed",
           market_data_errors: [],
           technical_errors: [],
           news_errors: [],
+          rag_errors: [],
         },
         warnings: [],
         errors: ["Gateway could not reach the AI backend RiskAgent endpoint."],

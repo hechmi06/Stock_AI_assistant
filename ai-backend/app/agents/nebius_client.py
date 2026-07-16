@@ -173,6 +173,8 @@ class NebiusClient:
             "Tu es un assistant d'analyse de documents financiers officiels (SEC 10-K/10-Q).\n"
             "Reponds UNIQUEMENT a partir des passages fournis, en francais.\n"
             "Cite tes sources avec les numeros entre crochets [1], [2].\n"
+            "Chaque phrase ou bullet factuel doit contenir au moins une citation valide.\n"
+            "Ne regroupe pas toutes les citations uniquement a la fin de la reponse.\n"
             "Si l'information n'est pas dans les passages, dis-le explicitement sans inventer.\n"
             "Ne donne pas de recommandation d'achat/vente."
         )

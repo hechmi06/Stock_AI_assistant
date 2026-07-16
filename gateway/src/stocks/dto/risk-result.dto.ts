@@ -1,8 +1,8 @@
 import { ApiProperty } from "@nestjs/swagger";
 
 class RiskItemDto {
-  @ApiProperty({ enum: ["market", "technical", "fundamental", "news", "data_quality"] })
-  category!: "market" | "technical" | "fundamental" | "news" | "data_quality";
+  @ApiProperty({ enum: ["market", "technical", "fundamental", "news", "documentary", "data_quality"] })
+  category!: "market" | "technical" | "fundamental" | "news" | "documentary" | "data_quality";
 
   @ApiProperty({ enum: ["low", "medium", "high"] })
   level!: "low" | "medium" | "high";
@@ -30,6 +30,9 @@ class AgentRiskSnapshotDto {
   @ApiProperty({ enum: ["success", "partial", "failed"] })
   news_status!: "success" | "partial" | "failed";
 
+  @ApiProperty({ enum: ["success", "partial", "failed"] })
+  rag_status!: "success" | "partial" | "failed";
+
   @ApiProperty({ type: [String] })
   market_data_errors!: string[];
 
@@ -38,6 +41,9 @@ class AgentRiskSnapshotDto {
 
   @ApiProperty({ type: [String] })
   news_errors!: string[];
+
+  @ApiProperty({ type: [String] })
+  rag_errors!: string[];
 }
 
 class RiskSlmSummaryDto {
@@ -76,8 +82,8 @@ export class RiskResultDto {
   @ApiProperty({
     type: "object",
     additionalProperties: { type: "number" },
-    description: "Contribution de chaque categorie au risk_score (market, technical, fundamental, news).",
-    example: { fundamental: 16, technical: 24, news: 22, market: 12 },
+    description: "Contribution de chaque categorie au risk_score (market, technical, fundamental, documentary, news).",
+    example: { fundamental: 16, technical: 14, news: 12, documentary: 18, market: 8 },
   })
   risk_score_breakdown!: Record<string, number>;
 

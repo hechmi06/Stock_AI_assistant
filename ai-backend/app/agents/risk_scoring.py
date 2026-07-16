@@ -3,7 +3,8 @@
 Le score de risque est pondere par categorie plutot qu'une somme brute :
 
 - chaque categorie de risque *intrinseque* (marche, technique, fondamental,
-  news) a une contribution maximale ; la somme de ces maximums vaut 100 ;
+  documentaire, news) a une contribution maximale ; la somme de ces maximums
+  vaut 100 ;
 - a l'interieur d'une categorie, les impacts s'additionnent puis saturent
   (au-dela de RISK_CATEGORY_SATURATION la categorie est "pleine"), ce qui
   empeche une pluie de petits risques de dominer le diagnostic ;
@@ -21,10 +22,11 @@ from .schemas import RiskItem
 
 # Contribution maximale de chaque categorie de risque intrinseque (somme = 100).
 RISK_CATEGORY_WEIGHTS: dict[str, int] = {
-    "fundamental": 30,
-    "technical": 25,
-    "news": 25,
-    "market": 20,
+    "fundamental": 25,
+    "technical": 20,
+    "news": 20,
+    "documentary": 25,
+    "market": 10,
 }
 
 # Somme d'impacts (points) a partir de laquelle une categorie est saturee.

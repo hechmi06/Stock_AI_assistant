@@ -1,8 +1,8 @@
 """RiskAgent : diagnostic de risque explicable.
 
-Cet agent ne collecte pas directement de donnees externes. Il orchestre les
-agents deja valides (MarketDataAgent, TechnicalAgent, NewsAgent), puis applique
-des regles transparentes pour produire un score de risque et des preuves.
+Cet agent orchestre les agents deja valides (MarketDataAgent, TechnicalAgent,
+NewsAgent, RAGAgent), puis applique des regles transparentes pour produire un
+score de risque et des preuves.
 """
 
 from __future__ import annotations
@@ -10,11 +10,13 @@ from __future__ import annotations
 from .market_data_agent import MarketDataAgent
 from .nebius_client import NebiusClient
 from .news_agent import NewsAgent
+from .rag_agent import RagAgent
 from .risk_scoring import compute_risk_score, risk_score_breakdown
 from .schemas import (
     AgentRiskSnapshot,
     MarketDataResult,
     NewsResult,
+    RagResult,
     RiskItem,
     RiskLevel,
     RiskResult,
@@ -30,6 +32,7 @@ class RiskAgent:
         market_data_agent: MarketDataAgent | None = None,
         technical_agent: TechnicalAgent | None = None,
         news_agent: NewsAgent | None = None,
+        rag_agent: RagAgent | None = None,
         slm_client: NebiusClient | None = None,
     ) -> None:
         self.market_data_agent = market_data_agent or MarketDataAgent()
@@ -38,6 +41,7 @@ class RiskAgent:
         self.slm_client = slm_client or NebiusClient.for_agent("risk")
         memory = getattr(self.market_data_agent, "memory", None)
         self.graph = getattr(memory, "graph", None)
+        self.rag_agent = rag_agent or RagAgent(graph=self.graph)
 
     def run(self, ticker: str, use_cache: bool = True) -> RiskResult:
         normalized_ticker = ticker.strip().upper()
@@ -66,24 +70,27 @@ class RiskAgent:
             with_slm=True,
             company_name=market_data.company_profile.name,
         )
+        rag = self._query_rag_risks(normalized_ticker)
 
         risks: list[RiskItem] = []
         warnings: list[str] = []
 
-        for result in (market_data, news):
+        for result in (market_data, news, rag):
             warnings.extend(result.warnings)
         warnings.extend(self._slm_warnings(market_data.errors))
         warnings.extend(self._slm_warnings(technical.errors))
         warnings.extend(self._slm_warnings(news.errors))
+        warnings.extend(self._non_slm_errors(rag.errors))
 
         risks.extend(self._market_risks(market_data))
         risks.extend(self._fundamental_risks(market_data))
         risks.extend(self._technical_risks(technical))
         risks.extend(self._news_risks(news))
-        risks.extend(self._data_quality_risks(market_data, technical, news, warnings))
+        risks.extend(self._documentary_risks(rag))
+        risks.extend(self._data_quality_risks(market_data, technical, news, rag, warnings))
 
         # Le risk_score ne mesure que le risque intrinseque du titre
-        # (marche, technique, fondamental, news), pondere par categorie. Les
+        # (marche, technique, fondamental, documentaire, news), pondere par categorie. Les
         # problemes de qualite des donnees ne gonflent pas le risque (categorie
         # sans poids dans risk_scoring) : ils reduisent uniquement le
         # data_confidence_score. Sinon un titre sain servi pendant un rate-limit
@@ -91,18 +98,20 @@ class RiskAgent:
         score = compute_risk_score(risks)
         score_breakdown = risk_score_breakdown(risks)
         overall_level = self._level_from_score(score)
-        data_confidence_score = self._data_confidence_score(market_data, technical, news, warnings)
+        data_confidence_score = self._data_confidence_score(market_data, technical, news, rag, warnings)
         data_confidence_level = self._confidence_level_from_score(data_confidence_score)
         snapshot = AgentRiskSnapshot(
             market_data_status=market_data.status,
             technical_status=technical.status,
             news_status=news.status,
+            rag_status=rag.status,
             market_data_errors=self._non_slm_errors(market_data.errors),
             technical_errors=self._non_slm_errors(technical.errors),
             news_errors=self._non_slm_errors(news.errors),
+            rag_errors=self._non_slm_errors(rag.errors),
         )
 
-        statuses = [market_data.status, technical.status, news.status]
+        statuses = [market_data.status, technical.status, news.status, rag.status]
         if all(status == "failed" for status in statuses):
             status = "failed"
             errors = ["No upstream agent returned usable data for risk analysis."]
@@ -357,11 +366,148 @@ class RiskAgent:
             )
         return risks
 
+    def _query_rag_risks(self, ticker: str) -> RagResult:
+        question = (
+            "Quels sont les principaux risques documentaires cites dans les rapports SEC : "
+            "reglementation, litiges, concurrence, cybersecurite, IA, supply chain et operations ?"
+        )
+        result = self.rag_agent.query(ticker, question, top_k=8, with_slm=False)
+        if result.status == "failed" and result.indexed_chunks == 0:
+            try:
+                ingest = self.rag_agent.ingest(ticker, limit=1)
+                result = self.rag_agent.query(ticker, question, top_k=8, with_slm=False)
+                result.warnings.extend(ingest.warnings)
+                result.errors.extend(ingest.errors)
+            except Exception as error:
+                return RagResult(
+                    ticker=ticker,
+                    question=question,
+                    status="failed",
+                    errors=[f"RAGAgent unavailable for RiskAgent: {error}"],
+                )
+        return result
+
+    def _documentary_risks(self, result: RagResult) -> list[RiskItem]:
+        if result.status == "failed" or not result.passages:
+            return []
+
+        groups = [
+            {
+                "key": "regulatory",
+                "level": "high",
+                "title": "Pression reglementaire et antitrust",
+                "description": "Les documents officiels mentionnent des risques lies aux obligations reglementaires, enquetes, sanctions ou restrictions de marche.",
+                "needles": [
+                    "regulatory",
+                    "regulation",
+                    "antitrust",
+                    "investigation",
+                    "compliance",
+                    "penalties",
+                    "fines",
+                    "digital markets",
+                    "dma",
+                ],
+                "impact": 14,
+            },
+            {
+                "key": "legal",
+                "level": "medium",
+                "title": "Litiges et procedures juridiques",
+                "description": "Les rapports signalent des expositions a des litiges, procedures ou jugements potentiellement defavorables.",
+                "needles": ["litigation", "lawsuit", "legal proceedings", "investigations", "penalties", "fines", "judgments", "settlement"],
+                "impact": 10,
+            },
+            {
+                "key": "cybersecurity",
+                "level": "medium",
+                "title": "Cybersecurite et protection des donnees",
+                "description": "Les documents font apparaitre des risques d'attaques, d'incidents de securite ou de confidentialite des donnees.",
+                "needles": ["cybersecurity", "cyber", "security risks", "privacy", "data breach", "attacks", "vulnerabilities"],
+                "impact": 10,
+            },
+            {
+                "key": "ai",
+                "level": "medium",
+                "title": "Risques lies a l'intelligence artificielle",
+                "description": "Les rapports mentionnent des risques emergents lies a l'IA, notamment juridiques, operationnels, reputations ou de conformite.",
+                "needles": ["artificial intelligence", "machine learning", "bias", "inaccurate", "harmful content"],
+                "impact": 9,
+            },
+            {
+                "key": "supply_chain",
+                "level": "medium",
+                "title": "Dependance operationnelle et supply chain",
+                "description": "Les passages sources indiquent des risques lies aux composants, fournisseurs, qualite produit ou operations.",
+                "needles": ["supplier", "component", "manufacturing", "supply", "defects", "product safety", "operations"],
+                "impact": 8,
+            },
+            {
+                "key": "competition",
+                "level": "medium",
+                "title": "Pression concurrentielle",
+                "description": "Les documents decrivent une concurrence pouvant affecter les revenus, les marges ou la position de marche.",
+                "needles": ["competition", "competitors", "competitive", "market share", "pricing"],
+                "impact": 8,
+            },
+        ]
+
+        risks: list[RiskItem] = []
+        for group in groups:
+            evidence = self._rag_evidence_for_needles(result, group["needles"])
+            if not evidence:
+                continue
+            risks.append(
+                self._risk(
+                    "documentary",
+                    group["level"],
+                    group["title"],
+                    group["description"],
+                    evidence,
+                    group["impact"],
+                )
+            )
+            if len(risks) >= 4:
+                break
+        return risks
+
+    def _rag_evidence_for_needles(
+        self,
+        result: RagResult,
+        needles: list[str],
+    ) -> list[str]:
+        lowered_needles = [needle.lower() for needle in needles]
+        candidates = []
+        for index, passage in enumerate(result.passages, start=1):
+            text = f" {passage.text.lower()} "
+            matched = [needle for needle in lowered_needles if needle in text]
+            if not matched:
+                continue
+            candidates.append((len(matched), passage.score, index, passage, matched))
+
+        evidence: list[str] = []
+        for _, _, index, passage, matched in sorted(candidates, key=lambda item: (item[0], item[1]), reverse=True):
+            snippet = self._snippet(passage.text)
+            source = f"{passage.form or 'SEC'} {passage.filing_date or ''}".strip()
+            evidence.append(
+                f"RAG[{index}] {source} score={passage.score:.2f} terms={', '.join(matched[:3])}: {snippet}"
+            )
+            if len(evidence) >= 2:
+                break
+        return evidence
+
+    def _snippet(self, text: str, limit: int = 180) -> str:
+        cleaned = " ".join(text.split())
+        if len(cleaned) <= limit:
+            return cleaned
+        return f"{cleaned[:limit].rstrip()}..."
+
     def _data_quality_risks(
         self,
         market_data: MarketDataResult,
         technical: TechnicalResult,
         news: NewsResult,
+        rag: RagResult,
         warnings: list[str],
     ) -> list[RiskItem]:
         risks: list[RiskItem] = []
@@ -371,6 +517,7 @@ class RiskAgent:
                 ("MarketDataAgent", market_data.status),
                 ("TechnicalAgent", technical.status),
                 ("NewsAgent", news.status),
+                ("RAGAgent", rag.status),
             ]
             if status == "failed"
         ]
@@ -391,6 +538,7 @@ class RiskAgent:
                 ("MarketDataAgent", market_data.status),
                 ("TechnicalAgent", technical.status),
                 ("NewsAgent", news.status),
+                ("RAGAgent", rag.status),
             ]
             if status == "partial"
         ]
@@ -465,6 +613,17 @@ class RiskAgent:
                     5,
                 )
             )
+        if rag.status != "success":
+            risks.append(
+                self._risk(
+                    "data_quality",
+                    "medium",
+                    "Couverture documentaire RAG limitee",
+                    "Les risques extraits des rapports financiers sont absents ou partiels.",
+                    [f"rag_status = {rag.status}", f"indexed_chunks = {rag.indexed_chunks}"],
+                    6,
+                )
+            )
         return risks
 
     def _data_confidence_score(
@@ -472,6 +631,7 @@ class RiskAgent:
         market_data: MarketDataResult,
         technical: TechnicalResult,
         news: NewsResult,
+        rag: RagResult,
         warnings: list[str],
     ) -> int:
         # La confiance mesure la disponibilite REELLE des donnees, pas le bruit
@@ -481,7 +641,7 @@ class RiskAgent:
         # le statut des composants, la redondance des sources reellement
         # utilisees, la completude effective et le recours a un secours interne.
         score = 100
-        for status in (market_data.status, technical.status, news.status):
+        for status in (market_data.status, technical.status, news.status, rag.status):
             if status == "failed":
                 score -= 30
             elif status == "partial":
@@ -503,6 +663,14 @@ class RiskAgent:
             score -= 20
         elif len(news.sources_used) < 2:
             score -= 8
+        if rag.status == "failed":
+            score -= 12
+        elif rag.status == "partial":
+            score -= 6
+        if rag.indexed_chunks == 0:
+            score -= 10
+        elif len(rag.passages) < 3:
+            score -= 5
 
         # Degradations reelles de fraicheur (secours interne / cache resservi),
         # a distinguer d'un simple warning de source redondante indisponible.
@@ -538,7 +706,7 @@ class RiskAgent:
     def _level_from_score(self, score: int) -> RiskLevel:
         if score >= 61:
             return "high"
-        if score >= 31:
+        if score >= 30:
             return "medium"
         return "low"
 
