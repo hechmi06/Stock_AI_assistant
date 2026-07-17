@@ -11,7 +11,13 @@ import threading
 from datetime import datetime, timezone
 from pathlib import Path
 
-from app.agents.schemas import MarketDataResult, NewsResult, RiskResult, TechnicalResult
+from app.agents.schemas import (
+    MarketDataResult,
+    NewsResult,
+    RiskResult,
+    SynthesisResult,
+    TechnicalResult,
+)
 
 from .structured_memory import default_db_path
 
@@ -35,6 +41,9 @@ _FUNCTIONAL_PREDICATES = {
     "has_risk_score",
     "has_data_confidence_score",
     "has_data_confidence_level",
+    "has_global_score",
+    "has_recommendation",
+    "has_synthesis_confidence",
 }
 
 _SCHEMA = """
@@ -158,6 +167,27 @@ class KnowledgeGraph:
             self.add_fact(risk_id, "has_score_impact", str(risk.score_impact))
             for evidence in risk.evidence:
                 self.add_fact(risk_id, "supported_by", evidence)
+
+    def ingest_synthesis_result(self, result: SynthesisResult) -> None:
+        """Faits de synthese : score global, recommandation, confiance et signaux."""
+        ticker = result.ticker
+
+        self.add_fact(ticker, "has_global_score", str(result.global_score))
+        self.add_fact(ticker, "has_recommendation", result.recommendation)
+        self.add_fact(ticker, "has_synthesis_confidence", str(result.confidence_score))
+        # Les signaux embarquent des valeurs datees (scores) : on remplace le
+        # jeu complet a chaque session plutot que d'accumuler des faits perimes.
+        with self._lock:
+            self._conn.execute(
+                "DELETE FROM kg_triples WHERE subject = ?"
+                " AND predicate IN ('has_strength', 'has_weakness')",
+                (ticker,),
+            )
+            self._conn.commit()
+        for strength in result.strengths:
+            self.add_fact(ticker, "has_strength", strength)
+        for weakness in result.weaknesses:
+            self.add_fact(ticker, "has_weakness", weakness)
 
     def facts_for(self, subject: str) -> list[dict[str, str]]:
         with self._lock:

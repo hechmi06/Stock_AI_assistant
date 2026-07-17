@@ -1,3 +1,4 @@
+from datetime import datetime
 from typing import Literal
 
 from pydantic import BaseModel, Field
@@ -212,3 +213,67 @@ class MarketDataResult(BaseModel):
     errors: list[str] = Field(default_factory=list)
     raw_price: PriceQuote | None = None
     slm_summary: SlmSummary | None = None
+
+
+SynthesisRecommendation = Literal[
+    "favorable",
+    "a_surveiller",
+    "prudence",
+    "defavorable",
+    "donnees_insuffisantes",
+]
+
+
+class SynthesisScores(BaseModel):
+    technical: int = Field(default=50, ge=0, le=100)
+    fundamental: int = Field(default=50, ge=0, le=100)
+    news: int = Field(default=50, ge=0, le=100)
+    risk: int = Field(default=50, ge=0, le=100)
+
+
+class AgentStatusSummary(BaseModel):
+    market_data: MarketDataStatus = "failed"
+    technical: MarketDataStatus = "failed"
+    news: MarketDataStatus = "failed"
+    rag: MarketDataStatus = "failed"
+    risk: MarketDataStatus = "failed"
+
+
+class SynthesisResult(BaseModel):
+    ticker: str
+    status: MarketDataStatus
+    global_score: int = Field(default=0, ge=0, le=100)
+    recommendation: SynthesisRecommendation = "donnees_insuffisantes"
+    confidence_score: int = Field(default=0, ge=0, le=100)
+    confidence_level: RiskLevel = "low"
+    scores: SynthesisScores = Field(default_factory=SynthesisScores)
+    weights: dict[str, float] = Field(default_factory=dict)
+    summary: str = ""
+    strengths: list[str] = Field(default_factory=list)
+    weaknesses: list[str] = Field(default_factory=list)
+    key_risks: list[RiskItem] = Field(default_factory=list)
+    sources: list[str] = Field(default_factory=list)
+    agent_status: AgentStatusSummary = Field(default_factory=AgentStatusSummary)
+    warnings: list[str] = Field(default_factory=list)
+    errors: list[str] = Field(default_factory=list)
+    slm_summary: SlmSummary | None = None
+
+
+class AgentExecution(BaseModel):
+    agent: str
+    status: MarketDataStatus
+    duration_ms: int = Field(default=0, ge=0)
+
+
+class OrchestratedAnalysis(BaseModel):
+    ticker: str
+    status: MarketDataStatus
+    workflow: str = "langgraph"
+    generated_at: datetime
+    execution_trace: list[AgentExecution] = Field(default_factory=list)
+    market_data: MarketDataResult
+    technical: TechnicalResult
+    news: NewsResult
+    rag: RagResult
+    risk: RiskResult
+    synthesis: SynthesisResult

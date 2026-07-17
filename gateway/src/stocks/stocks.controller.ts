@@ -6,6 +6,7 @@ import { NewsResultDto } from "./dto/news-result.dto";
 import { RagIngestResultDto, RagResultDto } from "./dto/rag-result.dto";
 import { RiskResultDto } from "./dto/risk-result.dto";
 import { TechnicalResultDto } from "./dto/technical-result.dto";
+import { OrchestratedAnalysisDto, SynthesisResultDto } from "./dto/synthesis-result.dto";
 import { StocksService } from "./stocks.service";
 
 @ApiTags("stocks")
@@ -55,6 +56,42 @@ export class StocksController {
   @Get(":ticker/analyze")
   analyzeTicker(@Param("ticker") ticker: string) {
     return this.stocksService.analyzeTicker(ticker);
+  }
+
+  @ApiOperation({
+    summary: "Validation isolee du SynthesisAgent",
+    description: "Calcule la synthese deterministe sans executer le workflow LangGraph.",
+  })
+  @ApiParam({ name: "ticker", example: "MSFT" })
+  @ApiOkResponse({ type: SynthesisResultDto })
+  @Get(":ticker/synthesis")
+  getSynthesis(@Param("ticker") ticker: string, @Query("fresh") fresh?: string) {
+    return this.stocksService.getSynthesis(ticker, fresh === "true");
+  }
+
+  @ApiOperation({
+    summary: "Evaluation qualite du SynthesisAgent",
+    description:
+      "Calcule les 12 metriques de qualite de la synthese (couverture, purete du score, coherence de la recommandation) pour la page Metriques des agents.",
+  })
+  @ApiParam({ name: "ticker", example: "MSFT", description: "Symbole boursier a evaluer" })
+  @ApiOkResponse({ type: EvaluationReportDto })
+  @Get(":ticker/synthesis/evaluation")
+  getSynthesisEvaluation(@Param("ticker") ticker: string) {
+    return this.stocksService.getSynthesisEvaluation(ticker);
+  }
+
+  @ApiOperation({
+    summary: "Analyse boursiere multi-agents complete",
+    description:
+      "Workflow LangGraph : MarketData et RAG, puis Technical et News (filtrees par le profil entreprise), puis Risk et Synthesis.",
+  })
+  @ApiParam({ name: "ticker", example: "MSFT" })
+  @ApiQuery({ name: "fresh", required: false, type: Boolean })
+  @ApiOkResponse({ type: OrchestratedAnalysisDto })
+  @Get(":ticker/full-analysis")
+  getFullAnalysis(@Param("ticker") ticker: string, @Query("fresh") fresh?: string) {
+    return this.stocksService.getFullAnalysis(ticker, fresh === "true");
   }
 
   @ApiOperation({

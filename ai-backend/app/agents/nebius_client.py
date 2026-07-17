@@ -68,6 +68,14 @@ class NebiusClient:
             return None
         return self._complete_json(self._risk_system_prompt(), self._build_risk_prompt(payload))
 
+    def summarize_synthesis_data(self, payload: dict[str, Any]) -> dict[str, Any] | None:
+        if not self.is_enabled():
+            return None
+        return self._complete_json(
+            self._synthesis_system_prompt(),
+            f"SYNTHESE_CALCULEE:\n{json.dumps(payload, ensure_ascii=True)}",
+        )
+
     def analyze_news(self, payload: dict[str, Any]) -> dict[str, Any] | None:
         """Analyse de sentiment des news : un seul appel batch pour tous les articles.
 
@@ -434,6 +442,32 @@ class NebiusClient:
             '  "data_quality": "excellent | bon | partiel | faible",\n'
             '  "key_points": ["point 1", "point 2", "point 3"],\n'
             '  "warnings": ["limite importante"]\n'
+            "}"
+        )
+
+    def _synthesis_system_prompt(self) -> str:
+        return (
+            "Tu es un analyste financier senior : tu rediges la note de synthese finale d'une application d'analyse boursiere.\n"
+            "La recommandation et les scores sont deja calcules par du code deterministe : tu ne les remets jamais en cause,\n"
+            "tu n'inventes aucun fait et tu ne t'appuies que sur les donnees du dossier fourni.\n"
+            "REGLE D'ECRITURE ESSENTIELLE : ta note ne contient AUCUN chiffre, score, pourcentage ni niveau de prix.\n"
+            "Tu traduis les donnees en jugements qualitatifs argumentes : une tendance porteuse, des marges confortables,\n"
+            "un endettement maitrise, un risque eleve, une zone de soutien proche, etc.\n"
+            "Interdits absolus : les mots 'acheter' et 'vendre' (la recommandation est une simulation analytique, pas un conseil financier).\n"
+            "Redige en francais une note argumentative SPECIFIQUE a ce dossier, jamais generique, en 6 a 10 phrases qui developpent :\n"
+            "1) le verdict : la conclusion de la recommandation, affirmee des la premiere phrase avec le ton adapte (conviction, surveillance, mise en garde) ;\n"
+            "2) la these : les arguments qui portent ce classement, EXPLIQUES en detail (pourquoi la dynamique technique aide ou dessert le dossier,\n"
+            "   ce que la sante financiere dit de l'entreprise, ce que le climat d'actualite change) ;\n"
+            "3) la vigilance : pourquoi temperer ou surveiller, en developpant les risques concrets du dossier et leurs consequences possibles ;\n"
+            "4) la suite : ce qu'un investisseur attentif devrait surveiller dans les prochaines semaines (comportement du titre pres de ses zones\n"
+            "   techniques, evenements d'actualite cites dans le dossier, elements financiers a confirmer).\n"
+            "Chaque affirmation doit etre justifiee par un element du dossier, comme le ferait un analyste devant son comite d'investissement.\n"
+            "Reponds uniquement en JSON valide avec exactement ces champs:\n"
+            "{\n"
+            '  "summary": "note d\'analyste argumentative, detaillee, sans aucun chiffre",\n'
+            '  "data_quality": "excellent | bon | partiel | faible",\n'
+            '  "key_points": ["argument qualitatif specifique 1", "argument 2", "argument 3"],\n'
+            '  "warnings": ["limite de donnees importante"]\n'
             "}"
         )
 

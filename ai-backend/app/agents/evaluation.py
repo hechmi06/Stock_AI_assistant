@@ -16,7 +16,14 @@ from pydantic import BaseModel, Field
 from datetime import datetime, timezone
 
 from .risk_scoring import compute_risk_score
-from .schemas import MarketDataResult, NewsResult, RagResult, RiskResult, TechnicalResult
+from .schemas import (
+    MarketDataResult,
+    NewsResult,
+    RagResult,
+    RiskResult,
+    SynthesisResult,
+    TechnicalResult,
+)
 
 Grade = Literal["excellent", "good", "partial", "poor"]
 
@@ -1309,6 +1316,287 @@ def evaluate_rag(result: RagResult) -> EvaluationReport:
         _rag_answer_grounded(result),
         _rag_source_traceability(result),
         _rag_controlled_errors(result),
+    ]
+
+    return _build_report(result.ticker, metrics)
+
+
+# ---------------------------------------------------------------------------
+# Evaluation du SynthesisAgent
+# ---------------------------------------------------------------------------
+#
+# Le SynthesisAgent est evalue sur la qualite de son agregation : couverture des
+# agents amont, purete du score (recalculable depuis scores + poids publies),
+# coherence de la recommandation avec ses garde-fous, et explicabilite.
+
+SYNTHESIS_AGENT_COUNT = 5  # market_data, technical, news, rag, risk
+SYNTHESIS_COVERAGE_MIN_PASS = 4
+SYNTHESIS_WEIGHT_TOLERANCE = 0.01
+SYNTHESIS_SCORE_TOLERANCE = 1  # arrondi : ecart max tolere entre score publie et recalcul
+SYNTHESIS_CONFIDENCE_GATE = 40  # sous ce seuil, seule "donnees_insuffisantes" est valide
+SYNTHESIS_FAVORABLE_MIN_SCORE = 75
+SYNTHESIS_FAVORABLE_MIN_CONFIDENCE = 55
+SYNTHESIS_SURVEILLER_MIN_SCORE = 60
+SYNTHESIS_PRUDENCE_MIN_SCORE = 45
+
+
+def _synthesis_agent_availability(result: SynthesisResult) -> MetricResult:
+    ok = result.status != "failed"
+    return MetricResult(
+        name="agent_availability",
+        score=1.0 if ok else 0.0,
+        passed=ok,
+        message=(
+            "Agent operationnel, synthese exploitable."
+            if ok
+            else "Synthese en echec (status=failed)."
+        ),
+    )
+
+
+def _synthesis_status_validity(result: SynthesisResult) -> MetricResult:
+    statuses = list(result.agent_status.model_dump().values())
+    all_failed = all(status == "failed" for status in statuses)
+    all_success = all(status == "success" for status in statuses)
+    if all_failed:
+        expected = "failed"
+    elif all_success:
+        expected = "success"
+    else:
+        expected = "partial"
+    coherent = result.status == expected
+    if result.status == "success":
+        score = 1.0
+    elif result.status == "partial":
+        score = 0.7
+    else:
+        score = 0.0
+    if not coherent:
+        score *= 0.5
+    return MetricResult(
+        name="status_validity",
+        score=_clamp01(score),
+        passed=coherent and result.status != "failed",
+        message=(
+            f"Statut '{result.status}' {'coherent' if coherent else 'incoherent'}"
+            f" avec les statuts des agents (attendu '{expected}')."
+        ),
+    )
+
+
+def _synthesis_component_coverage(result: SynthesisResult) -> MetricResult:
+    statuses = result.agent_status.model_dump()
+    available = [name for name, status in statuses.items() if status != "failed"]
+    count = len(available)
+    return MetricResult(
+        name="component_coverage",
+        score=_clamp01(count / SYNTHESIS_AGENT_COUNT),
+        passed=count >= SYNTHESIS_COVERAGE_MIN_PASS,
+        message=f"{count}/{SYNTHESIS_AGENT_COUNT} agent(s) amont exploitable(s) : {', '.join(available) or 'aucun'}.",
+    )
+
+
+def _synthesis_weights_validity(result: SynthesisResult) -> MetricResult:
+    weights = result.weights
+    total = sum(weights.values()) if weights else 0.0
+    expected_keys = set(result.scores.model_dump().keys())
+    keys_ok = set(weights.keys()) == expected_keys
+    total_ok = abs(total - 1.0) <= SYNTHESIS_WEIGHT_TOLERANCE
+    ok = keys_ok and total_ok
+    return MetricResult(
+        name="weights_validity",
+        score=1.0 if ok else 0.5 if keys_ok or total_ok else 0.0,
+        passed=ok,
+        message=(
+            f"Poids publies (somme {total:.2f}) alignes sur les dimensions de score."
+            if ok
+            else f"Poids incomplets ou somme {total:.2f} != 1.0 (dimensions {'ok' if keys_ok else 'manquantes'})."
+        ),
+    )
+
+
+def _synthesis_score_purity(result: SynthesisResult) -> MetricResult:
+    """Le score global doit etre recalculable depuis scores + poids publies."""
+    scores = result.scores.model_dump()
+    if not result.weights:
+        return MetricResult(
+            name="score_purity",
+            score=0.0,
+            passed=False,
+            message="Aucun poids publie : le score global n'est pas verifiable.",
+        )
+    recomputed = round(sum(scores.get(name, 0) * weight for name, weight in result.weights.items()))
+    delta = abs(recomputed - result.global_score)
+    ok = delta <= SYNTHESIS_SCORE_TOLERANCE
+    return MetricResult(
+        name="score_purity",
+        score=1.0 if ok else _clamp01(1.0 - delta / 20),
+        passed=ok,
+        message=(
+            f"Score global {result.global_score}/100 conforme au recalcul pondere ({recomputed})."
+            if ok
+            else f"Score global {result.global_score}/100 != recalcul pondere ({recomputed})."
+        ),
+    )
+
+
+def _synthesis_recommendation_coherence(result: SynthesisResult) -> MetricResult:
+    """Verifie les invariants publics de la recommandation (garde-fous compris)."""
+    score = result.global_score
+    confidence = result.confidence_score
+    recommendation = result.recommendation
+
+    violations: list[str] = []
+    if confidence < SYNTHESIS_CONFIDENCE_GATE and recommendation != "donnees_insuffisantes":
+        violations.append(f"confiance {confidence} < {SYNTHESIS_CONFIDENCE_GATE} sans 'donnees_insuffisantes'")
+    if recommendation == "favorable" and (
+        score < SYNTHESIS_FAVORABLE_MIN_SCORE or confidence < SYNTHESIS_FAVORABLE_MIN_CONFIDENCE
+    ):
+        violations.append(f"'favorable' exige score >= {SYNTHESIS_FAVORABLE_MIN_SCORE} et confiance >= {SYNTHESIS_FAVORABLE_MIN_CONFIDENCE}")
+    if recommendation == "a_surveiller" and score < SYNTHESIS_SURVEILLER_MIN_SCORE:
+        violations.append(f"'a_surveiller' exige score >= {SYNTHESIS_SURVEILLER_MIN_SCORE}")
+    if recommendation == "prudence" and score < SYNTHESIS_PRUDENCE_MIN_SCORE:
+        violations.append(f"'prudence' exige score >= {SYNTHESIS_PRUDENCE_MIN_SCORE}")
+    if recommendation == "defavorable" and score >= SYNTHESIS_PRUDENCE_MIN_SCORE:
+        violations.append(f"'defavorable' exige score < {SYNTHESIS_PRUDENCE_MIN_SCORE}")
+
+    ok = not violations
+    return MetricResult(
+        name="recommendation_coherence",
+        score=1.0 if ok else 0.0,
+        passed=ok,
+        message=(
+            f"Recommandation '{recommendation}' coherente avec score {score} et confiance {confidence}."
+            if ok
+            else f"Incoherence(s) : {'; '.join(violations)}."
+        ),
+    )
+
+
+def _synthesis_confidence_validity(result: SynthesisResult) -> MetricResult:
+    score = result.confidence_score
+    if score >= 80:
+        expected = "high"
+    elif score >= 55:
+        expected = "medium"
+    else:
+        expected = "low"
+    coherent = result.confidence_level == expected
+    return MetricResult(
+        name="confidence_validity",
+        score=1.0 if coherent else 0.3,
+        passed=coherent,
+        message=(
+            f"Confiance {score}/100 coherente avec le niveau '{result.confidence_level}'."
+            if coherent
+            else f"Niveau '{result.confidence_level}' incoherent avec la confiance {score}/100 (attendu '{expected}')."
+        ),
+    )
+
+
+SYNTHESIS_SUMMARY_DETAIL_MIN = 250  # une note argumentative, pas une phrase generique
+
+
+def _synthesis_explainability(result: SynthesisResult) -> MetricResult:
+    summary = result.summary.strip()
+    has_summary = bool(summary)
+    # Le texte est desormais qualitatif (sans chiffres) : on evalue son niveau
+    # de detail, les scores restant exposes separement pour l'UI.
+    detailed = len(summary) >= SYNTHESIS_SUMMARY_DETAIL_MIN
+    signal_count = len(result.strengths) + len(result.weaknesses)
+    score = 0.0
+    if has_summary:
+        score += 0.5
+    if detailed:
+        score += 0.2
+    score += _clamp01(signal_count / 3) * 0.3
+    passed = has_summary and signal_count >= 1
+    return MetricResult(
+        name="explainability",
+        score=_clamp01(score),
+        passed=passed,
+        message=(
+            f"Note {'argumentee' if detailed else 'courte'}, {len(result.strengths)} force(s)"
+            f" et {len(result.weaknesses)} faiblesse(s) explicitees."
+            if passed
+            else "Synthese insuffisamment expliquee (resume ou signaux manquants)."
+        ),
+    )
+
+
+def _synthesis_key_risks_purity(result: SynthesisResult) -> MetricResult:
+    """Les risques cles doivent rester materiels (pas de data_quality) et limites."""
+    data_quality = [risk.title for risk in result.key_risks if risk.category == "data_quality"]
+    within_limit = len(result.key_risks) <= 5
+    ok = not data_quality and within_limit
+    return MetricResult(
+        name="key_risks_purity",
+        score=1.0 if ok else 0.3,
+        passed=ok,
+        message=(
+            f"{len(result.key_risks)} risque(s) cle(s), tous materiels."
+            if ok
+            else f"Risques cles pollues (data_quality: {len(data_quality)}) ou trop nombreux ({len(result.key_risks)})."
+        ),
+    )
+
+
+def _synthesis_source_traceability(result: SynthesisResult) -> MetricResult:
+    count = len(result.sources)
+    label = ", ".join(result.sources) if result.sources else "aucune"
+    return MetricResult(
+        name="source_traceability",
+        score=_clamp01(count / SOURCE_TARGET),
+        passed=count >= 1,
+        message=f"{count} source(s) tracee(s) : {label}.",
+    )
+
+
+def _synthesis_controlled_errors(result: SynthesisResult) -> MetricResult:
+    count = len(result.errors)
+    warn_count = len(result.warnings)
+    score = _clamp01(1.0 - count / ERROR_SCALE)
+    if count == 0:
+        message = f"Aucune erreur fatale ({warn_count} avertissement(s) non bloquant(s))."
+    else:
+        message = f"{count} erreur(s) remontee(s) des agents, {warn_count} avertissement(s)."
+    return MetricResult(
+        name="controlled_errors",
+        score=score,
+        passed=count <= ERROR_MAX_PASS,
+        message=message,
+    )
+
+
+def _synthesis_slm_summary(result: SynthesisResult) -> MetricResult:
+    summary = result.slm_summary
+    ok = summary is not None
+    message = (
+        f"Resume SLM present (qualite: {summary.data_quality})." if ok else "Resume SLM absent."
+    )
+    return MetricResult(
+        name="slm_summary_availability",
+        score=1.0 if ok else 0.0,
+        passed=ok,
+        message=message,
+    )
+
+
+def evaluate_synthesis(result: SynthesisResult) -> EvaluationReport:
+    """Evalue un resultat de SynthesisAgent et renvoie un rapport complet."""
+    metrics = [
+        _synthesis_agent_availability(result),
+        _synthesis_status_validity(result),
+        _synthesis_component_coverage(result),
+        _synthesis_weights_validity(result),
+        _synthesis_score_purity(result),
+        _synthesis_recommendation_coherence(result),
+        _synthesis_confidence_validity(result),
+        _synthesis_explainability(result),
+        _synthesis_key_risks_purity(result),
+        _synthesis_source_traceability(result),
+        _synthesis_controlled_errors(result),
+        _synthesis_slm_summary(result),
     ]
 
     return _build_report(result.ticker, metrics)

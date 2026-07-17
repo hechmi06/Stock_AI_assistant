@@ -24,6 +24,7 @@ import {
 } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { AgentMetrics } from "./components/AgentMetrics";
+import { FullAnalysis } from "./components/FullAnalysis";
 import { NewsFeed } from "./components/NewsFeed";
 import { fetchMarketDashboard } from "./services/analysisApi";
 import type { MarketDashboard, MarketRow } from "./types";
@@ -329,20 +330,26 @@ export function App() {
   const [dashboard, setDashboard] = useState<MarketDashboard>(fallbackDashboard);
   const [selectedSymbol, setSelectedSymbol] = useState("AAPL");
   const [loading, setLoading] = useState(false);
-  const [view, setView] = useState<"trading" | "dashboard">("trading");
+  const [view, setView] = useState<"trading" | "analysis" | "dashboard">("trading");
   const [marketPage, setMarketPage] = useState(1);
 
   async function loadDashboard(page = marketPage) {
     setLoading(true);
-    const nextDashboard = await fetchMarketDashboard({ page, limit: 25 });
-    setDashboard(nextDashboard);
-    setMarketPage(nextDashboard.page);
-    setSelectedSymbol((current) =>
-      nextDashboard.rows.some((row) => row.symbol === current)
-        ? current
-        : nextDashboard.rows[0]?.symbol ?? "AAPL",
-    );
-    setLoading(false);
+    try {
+      const nextDashboard = await fetchMarketDashboard({ page, limit: 25 });
+      setDashboard(nextDashboard);
+      setMarketPage(nextDashboard.page);
+      setSelectedSymbol((current) =>
+        nextDashboard.rows.some((row) => row.symbol === current)
+          ? current
+          : nextDashboard.rows[0]?.symbol ?? "AAPL",
+      );
+    } catch {
+      // Le tableau de demonstration deja affiche reste disponible si le MCP
+      // n'a pas encore termine son demarrage.
+    } finally {
+      setLoading(false);
+    }
   }
 
   useEffect(() => {
@@ -435,6 +442,13 @@ export function App() {
                   <LineChart size={15} /> Trading
                 </button>
                 <button
+                  className={view === "analysis" ? "selected" : ""}
+                  type="button"
+                  onClick={() => setView("analysis")}
+                >
+                  <BrainCircuit size={15} /> Analyse IA
+                </button>
+                <button
                   className={view === "dashboard" ? "selected" : ""}
                   type="button"
                   onClick={() => setView("dashboard")}
@@ -455,6 +469,8 @@ export function App() {
           {/* Content */}
           {view === "dashboard" ? (
             <AgentMetrics />
+          ) : view === "analysis" ? (
+            <FullAnalysis ticker={selectedSymbol} />
           ) : (
             <>
               {/* Stats row */}
@@ -561,10 +577,10 @@ export function App() {
 
                   <div className="ai-quick-actions">
                     <p>Actions rapides</p>
-                    <button type="button" className="ai-action-chip">
+                    <button type="button" className="ai-action-chip" onClick={() => setView("analysis")}>
                       <Zap size={13} /> Analyse technique {selectedRow?.symbol ?? "AAPL"}
                     </button>
-                    <button type="button" className="ai-action-chip">
+                    <button type="button" className="ai-action-chip" onClick={() => setView("analysis")}>
                       <BrainCircuit size={13} /> Résumé IA complet
                     </button>
                     <button type="button" className="ai-action-chip">

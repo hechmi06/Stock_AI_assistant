@@ -11,11 +11,14 @@ from app.agents import (
     MarketDataResult,
     NewsAgent,
     NewsResult,
+    OrchestratedAnalysis,
     RagAgent,
     RagIngestResult,
     RagResult,
     RiskAgent,
     RiskResult,
+    SynthesisAgent,
+    SynthesisResult,
     TechnicalAgent,
     TechnicalResult,
 )
@@ -25,8 +28,10 @@ from app.agents.evaluation import (
     evaluate_news,
     evaluate_rag,
     evaluate_risk,
+    evaluate_synthesis,
     evaluate_technical,
 )
+from app.orchestrator import StockAnalysisOrchestrator
 
 
 def _load_root_env() -> None:
@@ -71,6 +76,14 @@ risk_agent = RiskAgent(
     technical_agent=technical_agent,
     news_agent=news_agent,
     rag_agent=rag_agent,
+)
+synthesis_agent = SynthesisAgent()
+analysis_orchestrator = StockAnalysisOrchestrator(
+    market_data_agent=market_data_agent,
+    technical_agent=technical_agent,
+    news_agent=news_agent,
+    risk_agent=risk_agent,
+    synthesis_agent=synthesis_agent,
 )
 
 
@@ -394,6 +407,31 @@ def get_news_memory(ticker: str) -> dict[str, object]:
 def run_risk_agent(ticker: str, fresh: bool = False) -> RiskResult:
     """Diagnostic de risque via MarketDataAgent + TechnicalAgent + NewsAgent."""
     return risk_agent.run(ticker, use_cache=not fresh)
+
+
+@app.get("/agents/synthesis/{ticker}", response_model=SynthesisResult)
+def run_synthesis_agent(ticker: str, fresh: bool = False) -> SynthesisResult:
+    """Valide SynthesisAgent directement, sans execution du graphe LangGraph."""
+    return analysis_orchestrator.run_synthesis_direct(ticker, use_cache=not fresh)
+
+
+@app.get("/agents/synthesis/{ticker}/evaluation", response_model=EvaluationReport)
+def evaluate_synthesis_agent(ticker: str, fresh: bool = False) -> EvaluationReport:
+    """Evaluation qualite du SynthesisAgent (memes principes que les autres agents)."""
+    result = analysis_orchestrator.run_synthesis_direct(ticker, use_cache=not fresh)
+    return evaluate_synthesis(result)
+
+
+@app.get("/agents/synthesis/{ticker}/memory")
+def get_synthesis_memory(ticker: str) -> dict[str, object]:
+    """Memoire de session (historique des syntheses) + faits synthese du graphe."""
+    return synthesis_agent.memory.summary(ticker.strip().upper())
+
+
+@app.get("/analysis/{ticker}", response_model=OrchestratedAnalysis)
+def run_orchestrated_analysis(ticker: str, fresh: bool = False) -> OrchestratedAnalysis:
+    """Analyse complete orchestree par LangGraph, avec trace de chaque agent."""
+    return analysis_orchestrator.run(ticker, use_cache=not fresh)
 
 
 @app.post("/agents/rag/{ticker}/ingest", response_model=RagIngestResult)

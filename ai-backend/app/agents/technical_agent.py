@@ -13,6 +13,7 @@ from .market_data_agent import MarketDataAgent
 from .nebius_client import NebiusClient
 from .schemas import (
     HistoricalPrice,
+    MarketDataResult,
     MovingAverages,
     SlmSummary,
     TechnicalResult,
@@ -55,6 +56,15 @@ class TechnicalAgent:
         market_data = self.market_data_agent.run(
             normalized_ticker, period=period, with_slm=False, use_cache=use_cache
         )
+        return self.analyze(market_data, with_slm=with_slm)
+
+    def analyze(
+        self,
+        market_data: MarketDataResult,
+        with_slm: bool = True,
+    ) -> TechnicalResult:
+        """Calcule les indicateurs depuis un resultat MarketData deja collecte."""
+        normalized_ticker = market_data.ticker.strip().upper()
         if market_data.status == "failed" or not market_data.historical_prices:
             return TechnicalResult(
                 ticker=normalized_ticker,

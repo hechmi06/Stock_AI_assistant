@@ -148,3 +148,98 @@ export type EvaluationReport = {
   grade: EvaluationGrade;
   passed: boolean;
 };
+
+export type AnalysisStatus = "success" | "partial" | "failed";
+export type RiskLevel = "low" | "medium" | "high";
+
+export type RiskItem = {
+  category: "market" | "technical" | "fundamental" | "news" | "documentary" | "data_quality";
+  level: RiskLevel;
+  title: string;
+  description: string;
+  evidence: string[];
+  score_impact: number;
+};
+
+export type SynthesisResult = {
+  ticker: string;
+  status: AnalysisStatus;
+  global_score: number;
+  recommendation: "favorable" | "a_surveiller" | "prudence" | "defavorable" | "donnees_insuffisantes";
+  confidence_score: number;
+  confidence_level: RiskLevel;
+  scores: {
+    technical: number;
+    fundamental: number;
+    news: number;
+    risk: number;
+  };
+  weights: Record<string, number>;
+  summary: string;
+  strengths: string[];
+  weaknesses: string[];
+  key_risks: RiskItem[];
+  sources: string[];
+  agent_status: Record<string, AnalysisStatus>;
+  warnings: string[];
+  errors: string[];
+};
+
+export type OrchestratedAnalysis = {
+  ticker: string;
+  status: AnalysisStatus;
+  workflow: "langgraph";
+  generated_at: string;
+  execution_trace: Array<{
+    agent: string;
+    status: AnalysisStatus;
+    duration_ms: number;
+  }>;
+  market_data: {
+    status: AnalysisStatus;
+    price: number | null;
+    change_percent: number | null;
+    sources_used: string[];
+    company_profile: {
+      name: string | null;
+      sector: string | null;
+      industry: string | null;
+      market_cap: number | null;
+    };
+  };
+  technical: {
+    status: AnalysisStatus;
+    rsi: number | null;
+    moving_averages: { sma_20: number | null; sma_50: number | null };
+    volatility: number | null;
+    trend: "bullish" | "bearish" | "neutral";
+    support_level: number | null;
+    resistance_level: number | null;
+    technical_score: number | null;
+    signal: "positive" | "negative" | "neutral";
+  };
+  news: NewsResult;
+  rag: {
+    status: AnalysisStatus;
+    indexed_chunks: number;
+    passages: Array<{
+      text: string;
+      form: string | null;
+      filing_date: string | null;
+      url: string | null;
+      score: number;
+    }>;
+    warnings: string[];
+    errors: string[];
+  };
+  risk: {
+    status: AnalysisStatus;
+    overall_risk_level: RiskLevel;
+    risk_score: number;
+    risk_score_breakdown: Record<string, number>;
+    data_confidence_score: number;
+    data_confidence_level: RiskLevel;
+    risks: RiskItem[];
+  };
+  synthesis: SynthesisResult;
+};

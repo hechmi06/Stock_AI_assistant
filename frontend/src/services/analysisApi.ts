@@ -1,5 +1,14 @@
 import { mockStocks } from "../data/mockStocks";
-import type { EvaluationReport, MarketDashboard, NewsResult, StockAnalysis, UsStockSearchResult } from "../types";
+import type { EvaluationReport, MarketDashboard, NewsResult, OrchestratedAnalysis, StockAnalysis, UsStockSearchResult } from "../types";
+
+export async function fetchFullAnalysis(ticker: string, fresh = false): Promise<OrchestratedAnalysis> {
+  const normalizedTicker = ticker.trim().toUpperCase();
+  const response = await fetch(`/api/stocks/${normalizedTicker}/full-analysis?fresh=${fresh}`);
+  if (!response.ok) {
+    throw new Error(`Gateway returned ${response.status}`);
+  }
+  return await response.json();
+}
 
 export async function fetchNews(ticker: string): Promise<NewsResult> {
   const normalizedTicker = ticker.trim().toUpperCase();

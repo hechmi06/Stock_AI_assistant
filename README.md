@@ -1092,17 +1092,38 @@ Raccourcis populaires pour les metriques : AAPL, MSFT, NVDA, TSLA, GOOGL, AMZN, 
 
 ## Decision actuelle
 
-`MarketDataAgent`, `TechnicalAgent`, `NewsAgent`, `RiskAgent` et `RAGAgent` sont valides.
-
-La prochaine etape logique est :
+`MarketDataAgent`, `TechnicalAgent`, `NewsAgent`, `RiskAgent`, `RAGAgent` et
+`SynthesisAgent` sont implementes. Le workflow complet est orchestre avec
+LangGraph selon ce graphe :
 
 ```txt
-Implementer SynthesisAgent (synthese finale multi-agents)
+MarketDataAgent ----> TechnicalAgent --\
+NewsAgent ------------------------------> RiskAgent --> SynthesisAgent
+RAGAgent -------------------------------/
 ```
 
-Il combinera les sorties des agents deja valides (dont les passages sources du
-RAGAgent) et beneficiera du knowledge graph commun deja alimente par les agents
-precedents.
+Au demarrage, MarketDataAgent, NewsAgent et RAGAgent sont executes en parallele.
+RiskAgent reutilise leurs resultats et celui de TechnicalAgent sans relancer les
+APIs. SynthesisAgent applique une ponderation deterministe : technique 30%,
+fondamental 25%, news 15% et maitrise du risque 30%. Le SLM peut reformuler le
+resume, mais ne peut modifier ni les scores ni la recommandation.
+
+Endpoints de validation :
+
+```txt
+GET /agents/synthesis/MSFT              # SynthesisAgent sans LangGraph
+GET /analysis/MSFT                      # workflow LangGraph complet
+GET /api/stocks/MSFT/synthesis          # via Gateway
+GET /api/stocks/MSFT/full-analysis      # via Gateway + UI
+```
+
+La vue `Analyse IA` du frontend presente le score global, la confiance des
+donnees, les scores par dimension, les risques documentes et la trace des six
+agents. Les tests deterministes sont dans
+`ai-backend/tests/test_synthesis_agent.py`.
+
+La prochaine etape logique est de calibrer les ponderations sur un jeu de
+validation historique, puis d'ajouter l'evaluation continue du SynthesisAgent.
 
 `SocialSentimentAgent` est ajoute au planning comme evolution ulterieure :
 il analysera Reddit/X comme signal social separe, avec un score de confiance

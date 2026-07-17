@@ -165,6 +165,7 @@ type RiskResult = {
   status: "success" | "partial" | "failed";
   overall_risk_level: "low" | "medium" | "high";
   risk_score: number;
+  risk_score_breakdown: Record<string, number>;
   data_confidence_score: number;
   data_confidence_level: "low" | "medium" | "high";
   risks: Array<{
@@ -195,6 +196,40 @@ type RiskResult = {
     key_points: string[];
     warnings: string[];
   } | null;
+};
+
+type SynthesisResult = {
+  ticker: string;
+  status: "success" | "partial" | "failed";
+  global_score: number;
+  recommendation: "favorable" | "a_surveiller" | "prudence" | "defavorable" | "donnees_insuffisantes";
+  confidence_score: number;
+  confidence_level: "low" | "medium" | "high";
+  scores: { technical: number; fundamental: number; news: number; risk: number };
+  weights: Record<string, number>;
+  summary: string;
+  strengths: string[];
+  weaknesses: string[];
+  key_risks: RiskResult["risks"];
+  sources: string[];
+  agent_status: Record<string, "success" | "partial" | "failed">;
+  warnings: string[];
+  errors: string[];
+  slm_summary: object | null;
+};
+
+type OrchestratedAnalysis = {
+  ticker: string;
+  status: "success" | "partial" | "failed";
+  workflow: "langgraph";
+  generated_at: string;
+  execution_trace: Array<{ agent: string; status: "success" | "partial" | "failed"; duration_ms: number }>;
+  market_data: MarketDataResult;
+  technical: TechnicalResult;
+  news: NewsResult;
+  rag: RagResult;
+  risk: RiskResult;
+  synthesis: SynthesisResult;
 };
 
 type RagResult = {
@@ -333,6 +368,20 @@ export class StocksService {
     }
   }
 
+  async getSynthesis(ticker: string, fresh = false): Promise<SynthesisResult> {
+    return this.fetchRequired<SynthesisResult>(
+      `/agents/synthesis/${ticker.trim().toUpperCase()}?fresh=${fresh}`,
+      "SynthesisAgent indisponible.",
+    );
+  }
+
+  async getFullAnalysis(ticker: string, fresh = false): Promise<OrchestratedAnalysis> {
+    return this.fetchRequired<OrchestratedAnalysis>(
+      `/analysis/${ticker.trim().toUpperCase()}?fresh=${fresh}`,
+      "Analyse multi-agents indisponible.",
+    );
+  }
+
   async getMarketData(ticker: string): Promise<MarketDataResult> {
     const normalizedTicker = ticker.trim().toUpperCase();
 
@@ -459,6 +508,7 @@ export class StocksService {
         status: "failed",
         overall_risk_level: "high",
         risk_score: 100,
+        risk_score_breakdown: {},
         data_confidence_score: 0,
         data_confidence_level: "low",
         risks: [],
@@ -546,9 +596,13 @@ export class StocksService {
     return this.fetchEvaluation(ticker, "rag");
   }
 
+  async getSynthesisEvaluation(ticker: string): Promise<EvaluationReport> {
+    return this.fetchEvaluation(ticker, "synthesis");
+  }
+
   private async fetchEvaluation(
     ticker: string,
-    agent: "market-data" | "technical" | "news" | "risk" | "rag",
+    agent: "market-data" | "technical" | "news" | "risk" | "rag" | "synthesis",
   ): Promise<EvaluationReport> {
     const normalizedTicker = ticker.trim().toUpperCase();
 
@@ -577,6 +631,18 @@ export class StocksService {
         grade: "poor",
         passed: false,
       };
+    }
+  }
+
+  private async fetchRequired<T>(path: string, message: string): Promise<T> {
+    try {
+      const response = await fetch(`${this.aiBackendUrl}${path}`);
+      if (!response.ok) {
+        throw new Error(`AI backend returned ${response.status}`);
+      }
+      return (await response.json()) as T;
+    } catch {
+      throw new ServiceUnavailableException(message);
     }
   }
 }

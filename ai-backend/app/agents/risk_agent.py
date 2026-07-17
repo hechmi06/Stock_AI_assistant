@@ -68,7 +68,7 @@ class RiskAgent:
             )
 
         market_data = self.market_data_agent.run(normalized_ticker, with_slm=False, use_cache=use_cache)
-        technical = self.technical_agent.run(normalized_ticker, use_cache=use_cache, with_slm=False)
+        technical = self.technical_agent.analyze(market_data, with_slm=False)
         # Le sentiment news est produit par le SLM : sans lui, sentiment_label
         # reste None, la dimension "risque news" ne se declenche jamais et
         # NewsAgent est fige en "partial". C'est le coeur du signal news pour le
@@ -83,21 +83,34 @@ class RiskAgent:
         )
         rag = self._query_rag_risks(normalized_ticker)
 
-        risks: list[RiskItem] = []
-        warnings: list[str] = []
+        return self.analyze(normalized_ticker, market_data, technical, news, rag)
 
-        for result in (market_data, news, rag):
-            warnings.extend(result.warnings)
-        warnings.extend(self._slm_warnings(market_data.errors))
-        warnings.extend(self._slm_warnings(technical.errors))
-        warnings.extend(self._slm_warnings(news.errors))
-        warnings.extend(self._non_slm_errors(rag.errors))
+    def analyze(
+        self,
+        ticker: str,
+        market_data: MarketDataResult,
+        technical: TechnicalResult,
+        news: NewsResult,
+        rag: RagResult,
+    ) -> RiskResult:
+        """Produit le diagnostic depuis des resultats amont deja calcules."""
+        normalized_ticker = ticker.strip().upper()
+
+        risks: list[RiskItem] = []
 
         risks.extend(self._market_risks(market_data))
         risks.extend(self._fundamental_risks(market_data))
         risks.extend(self._technical_risks(technical))
         risks.extend(self._news_risks(news))
         risks.extend(self._documentary_risks(rag, market_data))
+
+        warnings: list[str] = []
+        for result in (market_data, news, rag):
+            warnings.extend(result.warnings)
+        warnings.extend(self._slm_warnings(market_data.errors))
+        warnings.extend(self._slm_warnings(technical.errors))
+        warnings.extend(self._slm_warnings(news.errors))
+        warnings.extend(self._non_slm_errors(rag.errors))
         risks.extend(self._data_quality_risks(market_data, technical, news, rag, warnings))
 
         # Le risk_score ne mesure que le risque intrinseque du titre
@@ -377,7 +390,7 @@ class RiskAgent:
             )
         return risks
 
-    def _query_rag_risks(self, ticker: str) -> RagResult:
+    def query_rag_risks(self, ticker: str) -> RagResult:
         # La question cible des FAITS materiels (provisions chiffrees, procedures
         # nommees, concentrations) plutot que les sections de risques standard :
         # ces dernieres sont obligatoires dans tout depot SEC et ne discriminent
@@ -402,6 +415,10 @@ class RiskAgent:
                     errors=[f"RAGAgent unavailable for RiskAgent: {error}"],
                 )
         return result
+
+    # Compatibilite interne avec les appels existants.
+    def _query_rag_risks(self, ticker: str) -> RagResult:
+        return self.query_rag_risks(ticker)
 
     def _documentary_risks(self, result: RagResult, market_data: MarketDataResult | None = None) -> list[RiskItem]:
         """Risques documentaires juges MATERIELS par le SLM, preuves verifiees.

@@ -3,16 +3,18 @@
 - AgentMemory (MarketDataAgent) : memoire structuree + knowledge graph.
 - TechnicalAgentMemory (TechnicalAgent) : memoire temporelle + knowledge graph.
 - NewsAgentMemory (NewsAgent) : memoire documentaire + knowledge graph.
+- SynthesisAgentMemory (SynthesisAgent) : memoire de session + knowledge graph.
 """
 
 from __future__ import annotations
 
 from pathlib import Path
 
-from app.agents.schemas import MarketDataResult, NewsResult, TechnicalResult
+from app.agents.schemas import MarketDataResult, NewsResult, SynthesisResult, TechnicalResult
 
 from .documentary_memory import DocumentaryMemory
 from .knowledge_graph import KnowledgeGraph
+from .session_memory import SessionMemory
 from .structured_memory import StructuredMemory
 from .temporal_memory import TemporalMemory
 
@@ -58,6 +60,30 @@ class NewsAgentMemory:
         summary = self.documentary.summary(ticker)
         summary["knowledge_graph"] = self.graph.facts_for(ticker)
         return summary
+
+
+class SynthesisAgentMemory:
+    def __init__(self, db_path: Path | None = None) -> None:
+        self.session = SessionMemory(db_path)
+        self.graph = KnowledgeGraph(db_path)
+
+    def remember(self, result: SynthesisResult) -> str:
+        """Memorise la synthese de la session + met a jour les faits du graphe."""
+        generated_at = self.session.store(result)
+        self.graph.ingest_synthesis_result(result)
+        return generated_at
+
+    def recall_latest(self, ticker: str) -> tuple[SynthesisResult, str] | None:
+        return self.session.latest(ticker)
+
+    def summary(self, ticker: str) -> dict[str, object]:
+        """Historique des syntheses (evolution du diagnostic) + faits du graphe."""
+        return {
+            "ticker": ticker,
+            "session_count": self.session.count(ticker),
+            "session_history": self.session.history(ticker),
+            "knowledge_graph": self.graph.facts_for(ticker),
+        }
 
 
 class TechnicalAgentMemory:
