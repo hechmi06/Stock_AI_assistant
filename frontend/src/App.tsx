@@ -143,6 +143,13 @@ function bestRow(rows: MarketRow[]) {
   return rows.reduce((best, row) => (row.variation > best.variation ? row : best), rows[0]);
 }
 
+function pageRange(page: number, limit: number, total: number) {
+  if (!total) return "0-0";
+  const start = (page - 1) * limit + 1;
+  const end = Math.min(page * limit, total);
+  return `${start}-${end}`;
+}
+
 /** Ticker Search — searches across available tickers */
 function TickerSearch({
   rows,
@@ -323,12 +330,18 @@ export function App() {
   const [selectedSymbol, setSelectedSymbol] = useState("AAPL");
   const [loading, setLoading] = useState(false);
   const [view, setView] = useState<"trading" | "dashboard">("trading");
+  const [marketPage, setMarketPage] = useState(1);
 
-  async function loadDashboard() {
+  async function loadDashboard(page = marketPage) {
     setLoading(true);
-    const nextDashboard = await fetchMarketDashboard();
+    const nextDashboard = await fetchMarketDashboard({ page, limit: 25 });
     setDashboard(nextDashboard);
-    setSelectedSymbol(nextDashboard.rows[0]?.symbol ?? "AAPL");
+    setMarketPage(nextDashboard.page);
+    setSelectedSymbol((current) =>
+      nextDashboard.rows.some((row) => row.symbol === current)
+        ? current
+        : nextDashboard.rows[0]?.symbol ?? "AAPL",
+    );
     setLoading(false);
   }
 
@@ -342,6 +355,17 @@ export function App() {
   );
   const leader = dashboard.rows.length ? bestRow(dashboard.rows) : undefined;
   const totalPnl = dashboard.positions.reduce((total, position) => total + position.pnl, 0);
+  const orderedPositions = [
+    ...dashboard.positions.filter((p) => p.symbol === selectedSymbol),
+    ...dashboard.positions.filter((p) => p.symbol !== selectedSymbol),
+  ];
+  const hasPreviousPage = dashboard.page > 1;
+  const hasNextPage = dashboard.page < dashboard.total_pages;
+
+  function goToMarketPage(nextPage: number) {
+    const boundedPage = Math.max(1, Math.min(nextPage, Math.max(1, dashboard.total_pages)));
+    void loadDashboard(boundedPage);
+  }
 
   return (
     <>
@@ -435,6 +459,42 @@ export function App() {
             <>
               {/* Stats row */}
               <StatsRow rows={dashboard.rows} />
+
+              <section className="portfolio-strip" aria-label="Positions du jour">
+                <div className="portfolio-strip-head">
+                  <BriefcaseBusiness size={17} />
+                  <div>
+                    <span>Portefeuille</span>
+                    <strong>Positions du jour</strong>
+                  </div>
+                  <div className={`portfolio-pnl ${totalPnl >= 0 ? "positive" : "negative"}`}>
+                    {totalPnl >= 0 ? "+" : ""}
+                    {moneyFormatter.format(totalPnl)} USD
+                  </div>
+                </div>
+                <div className="portfolio-rail">
+                  {orderedPositions.map((position) => {
+                    const isActive = position.symbol === selectedSymbol;
+                    return (
+                      <button
+                        className={`portfolio-position ${isActive ? "active" : ""}`}
+                        key={position.id}
+                        type="button"
+                        onClick={() => setSelectedSymbol(position.symbol)}
+                      >
+                        <span className="portfolio-position-id">{position.id}</span>
+                        <strong>{position.symbol}</strong>
+                        <em>{position.product}</em>
+                        <span>{position.side} · {position.notional}</span>
+                        <span className={`portfolio-position-pnl ${position.pnl >= 0 ? "positive" : "negative"}`}>
+                          {position.pnl >= 0 ? "+" : ""}
+                          {moneyFormatter.format(position.pnl)}
+                        </span>
+                      </button>
+                    );
+                  })}
+                </div>
+              </section>
 
               <div className="market-layout">
                 {/* ── AI Panel ── */}
@@ -567,6 +627,30 @@ export function App() {
                           </div>
                         </button>
                       ))}
+                    </div>
+                    <div className="market-pagination">
+                      <div className="market-page-copy">
+                        <strong>{pageRange(dashboard.page, dashboard.limit, dashboard.total)}</strong>
+                        <span>
+                          sur {dashboard.total} entreprises · page {dashboard.page}/{Math.max(1, dashboard.total_pages)}
+                        </span>
+                      </div>
+                      <div className="pagination-actions">
+                        <button
+                          type="button"
+                          onClick={() => goToMarketPage(dashboard.page - 1)}
+                          disabled={!hasPreviousPage || loading}
+                        >
+                          Précédent
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => goToMarketPage(dashboard.page + 1)}
+                          disabled={!hasNextPage || loading}
+                        >
+                          Suivant
+                        </button>
+                      </div>
                     </div>
                   </article>
 

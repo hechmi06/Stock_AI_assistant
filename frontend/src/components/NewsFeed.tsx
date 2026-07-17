@@ -53,6 +53,9 @@ export function NewsFeed({ ticker }: { ticker: string }) {
     void loadNews(ticker);
   }, [ticker]);
 
+  const visibleEvents = news?.key_events.slice(0, 2) ?? [];
+  const visibleArticles = news?.articles.slice(0, 5) ?? [];
+
   return (
     <article className="panel news-panel">
       <div className="panel-title">
@@ -86,9 +89,9 @@ export function NewsFeed({ ticker }: { ticker: string }) {
         </div>
       ) : null}
 
-      {news?.key_events.length ? (
+      {visibleEvents.length ? (
         <div className="news-events-list">
-          {news.key_events.map((event, idx) => (
+          {visibleEvents.map((event, idx) => (
             <div className="news-event-item" key={idx}>
               <ChevronRight size={14} className="news-event-icon" />
               <span>{event}</span>
@@ -98,7 +101,7 @@ export function NewsFeed({ ticker }: { ticker: string }) {
       ) : null}
 
       <div className="news-list">
-        {news?.articles.map((article) => (
+        {visibleArticles.map((article) => (
           <a className="news-item" key={article.url} href={article.url} target="_blank" rel="noreferrer">
             <div className="news-item-head">
               {article.sentiment ? (

@@ -42,7 +42,24 @@ def _load_root_env() -> None:
         os.environ.setdefault(key.strip(), value.strip())
 
 
+def _sanitize_tls_env() -> None:
+    """Neutralise un bundle de certificats CA herite mais introuvable.
+
+    Un terminal peut exporter REQUESTS_CA_BUNDLE / SSL_CERT_FILE vers le certifi
+    d'un AUTRE interpreteur. `requests` echoue alors sur toutes les requetes
+    HTTPS ("Could not find a suitable TLS CA certificate bundle"), ce qui coupe
+    silencieusement le SLM et les APIs. Si le chemin n'existe pas, on retire la
+    variable pour laisser requests utiliser son propre certifi.
+    """
+    for name in ("REQUESTS_CA_BUNDLE", "SSL_CERT_FILE", "CURL_CA_BUNDLE"):
+        value = os.environ.get(name, "").strip()
+        if value and not Path(value).exists():
+            os.environ.pop(name, None)
+            print(f"[startup] {name} ignore : chemin introuvable ({value}).")
+
+
 _load_root_env()
+_sanitize_tls_env()
 
 app = FastAPI(title="Stock AI Assistant Backend", version="0.1.0")
 market_data_agent = MarketDataAgent()

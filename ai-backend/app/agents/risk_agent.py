@@ -25,6 +25,17 @@ from .schemas import (
 )
 from .technical_agent import TechnicalAgent
 
+# Impact d'un risque documentaire selon la severite. Ces risques etant desormais
+# rares (seuls les faits materiels passent), un titre sans fait specifique
+# contribue 0 : c'est ce qui rend la categorie discriminante.
+DOCUMENTARY_IMPACT_BY_LEVEL: dict[str, int] = {"high": 14, "medium": 9, "low": 5}
+
+# Seuils de materialite d'un montant rapporte au chiffre d'affaires annuel.
+# Le SLM extrait le montant, le code tranche : un modele de langue n'est pas
+# fiable sur l'arithmetique, alors qu'un ratio est verifiable.
+MATERIALITY_IGNORE_RATIO = 0.01  # < 1% du CA : bruit pour cette societe
+MATERIALITY_HIGH_RATIO = 0.05  # > 5% du CA : severe
+
 
 class RiskAgent:
     def __init__(
@@ -86,7 +97,7 @@ class RiskAgent:
         risks.extend(self._fundamental_risks(market_data))
         risks.extend(self._technical_risks(technical))
         risks.extend(self._news_risks(news))
-        risks.extend(self._documentary_risks(rag))
+        risks.extend(self._documentary_risks(rag, market_data))
         risks.extend(self._data_quality_risks(market_data, technical, news, rag, warnings))
 
         # Le risk_score ne mesure que le risque intrinseque du titre
@@ -367,9 +378,14 @@ class RiskAgent:
         return risks
 
     def _query_rag_risks(self, ticker: str) -> RagResult:
+        # La question cible des FAITS materiels (provisions chiffrees, procedures
+        # nommees, concentrations) plutot que les sections de risques standard :
+        # ces dernieres sont obligatoires dans tout depot SEC et ne discriminent
+        # donc aucune societe.
         question = (
-            "Quels sont les principaux risques documentaires cites dans les rapports SEC : "
-            "reglementation, litiges, concurrence, cybersecurite, IA, supply chain et operations ?"
+            "material legal proceedings accruals contingencies named investigations "
+            "impairment charges material weakness going concern customer supplier "
+            "concentration unusual dependencies specific losses and restrictions"
         )
         result = self.rag_agent.query(ticker, question, top_k=8, with_slm=False)
         if result.status == "failed" and result.indexed_chunks == 0:
@@ -387,120 +403,126 @@ class RiskAgent:
                 )
         return result
 
-    def _documentary_risks(self, result: RagResult) -> list[RiskItem]:
+    def _documentary_risks(self, result: RagResult, market_data: MarketDataResult | None = None) -> list[RiskItem]:
+        """Risques documentaires juges MATERIELS par le SLM, preuves verifiees.
+
+        La simple presence de mots-cles (reglementation, litiges, cybersecurite...)
+        n'est pas exploitee : ces sections sont obligatoires dans tout depot SEC et
+        ne distinguent aucune societe. On demande au SLM d'isoler les faits
+        specifiques, puis on ne conserve que les risques dont la citation est
+        retrouvee mot pour mot dans un passage (garde anti-hallucination).
+
+        Le contexte de taille (deja collecte par MarketDataAgent) est transmis pour
+        que la materialite soit jugee RELATIVEMENT au CA et non dans l'absolu : les
+        tableaux financiers du depot sont ecartes a l'indexation par le filtre
+        anti-XBRL, le SLM ne verrait sinon jamais l'echelle de la societe.
+        """
         if result.status == "failed" or not result.passages:
             return []
 
-        groups = [
-            {
-                "key": "regulatory",
-                "level": "high",
-                "title": "Pression reglementaire et antitrust",
-                "description": "Les documents officiels mentionnent des risques lies aux obligations reglementaires, enquetes, sanctions ou restrictions de marche.",
-                "needles": [
-                    "regulatory",
-                    "regulation",
-                    "antitrust",
-                    "investigation",
-                    "compliance",
-                    "penalties",
-                    "fines",
-                    "digital markets",
-                    "dma",
-                ],
-                "impact": 14,
-            },
-            {
-                "key": "legal",
-                "level": "medium",
-                "title": "Litiges et procedures juridiques",
-                "description": "Les rapports signalent des expositions a des litiges, procedures ou jugements potentiellement defavorables.",
-                "needles": ["litigation", "lawsuit", "legal proceedings", "investigations", "penalties", "fines", "judgments", "settlement"],
-                "impact": 10,
-            },
-            {
-                "key": "cybersecurity",
-                "level": "medium",
-                "title": "Cybersecurite et protection des donnees",
-                "description": "Les documents font apparaitre des risques d'attaques, d'incidents de securite ou de confidentialite des donnees.",
-                "needles": ["cybersecurity", "cyber", "security risks", "privacy", "data breach", "attacks", "vulnerabilities"],
-                "impact": 10,
-            },
-            {
-                "key": "ai",
-                "level": "medium",
-                "title": "Risques lies a l'intelligence artificielle",
-                "description": "Les rapports mentionnent des risques emergents lies a l'IA, notamment juridiques, operationnels, reputations ou de conformite.",
-                "needles": ["artificial intelligence", "machine learning", "bias", "inaccurate", "harmful content"],
-                "impact": 9,
-            },
-            {
-                "key": "supply_chain",
-                "level": "medium",
-                "title": "Dependance operationnelle et supply chain",
-                "description": "Les passages sources indiquent des risques lies aux composants, fournisseurs, qualite produit ou operations.",
-                "needles": ["supplier", "component", "manufacturing", "supply", "defects", "product safety", "operations"],
-                "impact": 8,
-            },
-            {
-                "key": "competition",
-                "level": "medium",
-                "title": "Pression concurrentielle",
-                "description": "Les documents decrivent une concurrence pouvant affecter les revenus, les marges ou la position de marche.",
-                "needles": ["competition", "competitors", "competitive", "market share", "pricing"],
-                "impact": 8,
-            },
-        ]
+        try:
+            assessed = self.slm_client.assess_documentary_risks(
+                {
+                    "ticker": result.ticker,
+                    "passages": [p.model_dump() for p in result.passages],
+                    "company_scale": self._company_scale(market_data),
+                }
+            )
+        except Exception as error:
+            result.warnings.append(f"Analyse documentaire SLM indisponible: {error}")
+            return []
 
+        if not assessed:
+            # Liste vide = aucun fait materiel au-dela du boilerplate : resultat valide.
+            return []
+
+        revenue = self._company_scale(market_data).get("total_revenue")
         risks: list[RiskItem] = []
-        for group in groups:
-            evidence = self._rag_evidence_for_needles(result, group["needles"])
-            if not evidence:
+        for item in assessed:
+            title = item.get("title") or ""
+            quote = item.get("quote") or ""
+            if not title:
                 continue
+            located = self._locate_quote(result, quote)
+            if located is None:
+                # Citation introuvable dans les passages : on refuse le risque
+                # plutot que d'afficher une preuve non verifiable.
+                result.warnings.append(f"Risque documentaire ignore (citation non verifiee) : {title}")
+                continue
+
+            level, ratio = self._materiality_level(item, revenue)
+            if level is None:
+                result.warnings.append(
+                    f"Risque documentaire ignore (montant negligeable, {ratio:.2%} du CA) : {title}"
+                )
+                continue
+
+            index, passage = located
+            source = f"{passage.form or 'SEC'} {passage.filing_date or ''}".strip()
+            share = f" ({ratio:.1%} du CA)" if ratio is not None else ""
+            evidence = [f'RAG[{index}] {source} score={passage.score:.2f}{share} : "{quote}"']
             risks.append(
                 self._risk(
                     "documentary",
-                    group["level"],
-                    group["title"],
-                    group["description"],
+                    level,
+                    title,
+                    item.get("description") or "Fait materiel identifie dans les depots SEC.",
                     evidence,
-                    group["impact"],
+                    DOCUMENTARY_IMPACT_BY_LEVEL.get(level, 9),
                 )
             )
             if len(risks) >= 4:
                 break
         return risks
 
-    def _rag_evidence_for_needles(
+    def _materiality_level(
         self,
-        result: RagResult,
-        needles: list[str],
-    ) -> list[str]:
-        lowered_needles = [needle.lower() for needle in needles]
-        candidates = []
+        item: dict,
+        revenue: float | None,
+    ) -> tuple[RiskLevel | None, float | None]:
+        """Tranche la materialite d'un fait chiffre : le ratio decide, pas le SLM.
+
+        Renvoie (niveau, ratio). Un niveau None signifie « a ecarter ». Les faits
+        non chiffrables (going concern, material weakness, concentration) gardent
+        le niveau juge par le SLM : aucun ratio ne s'y applique.
+        """
+        amount = item.get("amount_usd")
+        slm_level = item.get("level") or "medium"
+        if not isinstance(amount, (int, float)) or amount <= 0 or not revenue or revenue <= 0:
+            return slm_level, None
+
+        ratio = abs(amount) / revenue
+        if ratio < MATERIALITY_IGNORE_RATIO:
+            return None, ratio
+        if ratio > MATERIALITY_HIGH_RATIO:
+            return "high", ratio
+        return "medium", ratio
+
+    def _company_scale(self, market_data: MarketDataResult | None) -> dict[str, float | None]:
+        """Echelle de la societe, deja collectee par MarketDataAgent."""
+        if market_data is None:
+            return {}
+        summary = market_data.financial_statements_summary
+        return {
+            "total_revenue": summary.total_revenue,
+            "net_income": summary.net_income,
+            "total_assets": summary.total_assets,
+            "market_cap": market_data.company_profile.market_cap,
+        }
+
+    def _locate_quote(self, result: RagResult, quote: str) -> tuple[int, object] | None:
+        """Retrouve la citation dans les passages : preuve verifiee, pas inventee."""
+        if len(quote.strip()) < 20:
+            return None
+        needle = self._normalize_text(quote)
         for index, passage in enumerate(result.passages, start=1):
-            text = f" {passage.text.lower()} "
-            matched = [needle for needle in lowered_needles if needle in text]
-            if not matched:
-                continue
-            candidates.append((len(matched), passage.score, index, passage, matched))
+            if needle in self._normalize_text(passage.text):
+                return index, passage
+        return None
 
-        evidence: list[str] = []
-        for _, _, index, passage, matched in sorted(candidates, key=lambda item: (item[0], item[1]), reverse=True):
-            snippet = self._snippet(passage.text)
-            source = f"{passage.form or 'SEC'} {passage.filing_date or ''}".strip()
-            evidence.append(
-                f"RAG[{index}] {source} score={passage.score:.2f} terms={', '.join(matched[:3])}: {snippet}"
-            )
-            if len(evidence) >= 2:
-                break
-        return evidence
-
-    def _snippet(self, text: str, limit: int = 180) -> str:
-        cleaned = " ".join(text.split())
-        if len(cleaned) <= limit:
-            return cleaned
-        return f"{cleaned[:limit].rstrip()}..."
+    @staticmethod
+    def _normalize_text(text: str) -> str:
+        return " ".join(text.lower().split())
 
     def _data_quality_risks(
         self,

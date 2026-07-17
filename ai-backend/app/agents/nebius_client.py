@@ -153,6 +153,133 @@ class NebiusClient:
         ordered = sorted(data, key=lambda item: item.get("index", 0))
         return [item["embedding"] for item in ordered]
 
+    def assess_documentary_risks(self, payload: dict[str, Any]) -> list[dict[str, Any]] | None:
+        """Juge la MATERIALITE des risques dans des extraits de depots SEC.
+
+        Tout depot SEC contient obligatoirement des sections de risques standard :
+        leur presence n'est pas un signal. Le SLM ne doit remonter que les risques
+        specifiques appuyes par un fait concret, avec une citation verbatim que
+        l'appelant verifiera (garde anti-hallucination).
+
+        Renvoie une liste (possiblement vide = aucun risque materiel, resultat
+        valide) ou None si le SLM est desactive.
+        """
+        if not self.is_enabled():
+            return None
+
+        passages = payload.get("passages") or []
+        if not passages:
+            return []
+
+        blocks = []
+        for index, passage in enumerate(passages, start=1):
+            src = f"{passage.get('form') or 'SEC'} {passage.get('filing_date') or ''}".strip()
+            text = str(passage.get("text") or "")[:1400]
+            blocks.append(f"[{index}] (source: {src})\n{text}")
+        context = "\n\n".join(blocks)
+
+        user = (
+            f"SOCIETE: {payload.get('ticker')}\n"
+            f"{self._scale_context(payload.get('company_scale'))}\n\n"
+            f"EXTRAITS DE DEPOTS SEC:\n{context}"
+        )
+        parsed = self._chat_json(self._documentary_system_prompt(), user)
+        if parsed is None:
+            return None
+
+        raw_risks = parsed.get("risks")
+        if not isinstance(raw_risks, list):
+            return []
+
+        levels = {"low", "medium", "high"}
+        cleaned: list[dict[str, Any]] = []
+        for item in raw_risks:
+            if not isinstance(item, dict):
+                continue
+            level = str(item.get("level") or "").strip().lower()
+            amount = item.get("amount_usd")
+            cleaned.append(
+                {
+                    "title": str(item.get("title") or "").strip(),
+                    "description": str(item.get("description") or "").strip(),
+                    "level": level if level in levels else "medium",
+                    "quote": str(item.get("quote") or "").strip(),
+                    # Montant brut : la materialite est recalculee par l'appelant,
+                    # le SLM n'est pas fiable sur l'arithmetique.
+                    "amount_usd": float(amount) if isinstance(amount, (int, float)) else None,
+                }
+            )
+        return cleaned
+
+    def _scale_context(self, scale: Any) -> str:
+        """Contexte de taille : sert a juger la materialite RELATIVE, pas absolue."""
+        if not isinstance(scale, dict):
+            return "TAILLE: inconnue (juge alors avec prudence)."
+
+        def fmt(value: Any) -> str | None:
+            if not isinstance(value, (int, float)) or value == 0:
+                return None
+            billions = value / 1_000_000_000
+            return f"{billions:,.1f} Md USD" if abs(billions) >= 0.1 else f"{value:,.0f} USD"
+
+        parts = []
+        for label, key in (
+            ("chiffre d'affaires annuel", "total_revenue"),
+            ("resultat net", "net_income"),
+            ("actifs totaux", "total_assets"),
+            ("capitalisation", "market_cap"),
+        ):
+            formatted = fmt(scale.get(key))
+            if formatted:
+                parts.append(f"{label} {formatted}")
+        if not parts:
+            return "TAILLE: inconnue (juge alors avec prudence)."
+        return "TAILLE DE LA SOCIETE: " + ", ".join(parts) + "."
+
+    def _documentary_system_prompt(self) -> str:
+        return (
+            "Tu es un analyste qui lit des extraits de depots SEC (10-K/10-Q).\n"
+            "\n"
+            "REGLE ABSOLUE : tout depot SEC contient OBLIGATOIREMENT des sections de risques\n"
+            "standard (reglementation, litiges, concurrence, cybersecurite, supply chain, IA).\n"
+            "Leur simple presence n'est PAS un signal : c'est une obligation legale commune a\n"
+            "toutes les societes cotees. Tu dois les IGNORER.\n"
+            "\n"
+            "Ne remonte QUE les risques SPECIFIQUES et MATERIELS a cette societe, appuyes par\n"
+            "un fait concret present dans les extraits :\n"
+            "- montant chiffre significatif (provision, charge, amende, depreciation) ;\n"
+            "- procedure ou enquete NOMMEE (autorite precise, affaire identifiee) ;\n"
+            "- going concern, material weakness, retraitement comptable ;\n"
+            "- concentration ou dependance inhabituelle (client, fournisseur, region) ;\n"
+            "- litige, perte ou restriction EN COURS dont l'impact est decrit.\n"
+            "\n"
+            "MONTANTS : si le fait est chiffre, renseigne `amount_usd` avec le montant en USD\n"
+            "(nombre brut : 647 millions -> 647000000). Ne calcule AUCUN ratio toi-meme : la\n"
+            "materialite relative est recalculee ensuite a partir de la taille de la societe.\n"
+            "Si le fait n'est pas chiffrable (going concern, material weakness, concentration),\n"
+            "mets `amount_usd` a null et donne un `level` reflechi.\n"
+            "\n"
+            "Si les extraits ne contiennent que du boilerplate generique, renvoie une liste VIDE.\n"
+            "C'est un resultat valide et attendu : mieux vaut aucun risque qu'un faux signal.\n"
+            "\n"
+            "Pour chaque risque retenu, fournis une citation VERBATIM copiee MOT POUR MOT depuis\n"
+            "les extraits (ne reformule pas, ne traduis pas). Sans citation exacte, ne remonte\n"
+            "pas le risque. Maximum 4 risques.\n"
+            "\n"
+            "Reponds uniquement en JSON valide :\n"
+            "{\n"
+            '  "risks": [\n'
+            "    {\n"
+            '      "title": "titre court en francais",\n'
+            '      "description": "en une phrase francaise, pourquoi ce fait est materiel",\n'
+            '      "level": "low | medium | high",\n'
+            '      "amount_usd": 647000000,\n'
+            '      "quote": "citation verbatim exacte issue des extraits (20-200 caracteres)"\n'
+            "    }\n"
+            "  ]\n"
+            "}"
+        )
+
     def answer_rag(self, question: str, passages: list[dict[str, Any]]) -> str | None:
         """Reponse sourcee a partir de passages de documents SEC (RAGAgent).
 
