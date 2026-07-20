@@ -374,6 +374,11 @@ export function App() {
     void loadDashboard(boundedPage);
   }
 
+  function openAnalysis(symbol: string) {
+    setSelectedSymbol(symbol);
+    setView("analysis");
+  }
+
   return (
     <>
       {/* ── Ticker Tape ── */}
@@ -423,7 +428,7 @@ export function App() {
           {/* Top bar */}
           <header className="terminal-topbar">
             <div className="bank-block">
-              <button className="back-button" type="button" aria-label="Retour">
+              <button className="back-button" type="button" aria-label="Retour" onClick={() => setView("trading")}>
                 <ChevronsRight size={19} />
               </button>
               <div>
@@ -496,7 +501,7 @@ export function App() {
                         className={`portfolio-position ${isActive ? "active" : ""}`}
                         key={position.id}
                         type="button"
-                        onClick={() => setSelectedSymbol(position.symbol)}
+                        onClick={() => openAnalysis(position.symbol)}
                       >
                         <span className="portfolio-position-id">{position.id}</span>
                         <strong>{position.symbol}</strong>
@@ -524,7 +529,7 @@ export function App() {
                   <div style={{ padding: "0 14px 14px" }}>
                     <TickerSearch
                       rows={dashboard.rows}
-                      onSelect={(sym) => setSelectedSymbol(sym)}
+                      onSelect={openAnalysis}
                     />
                   </div>
 
@@ -615,7 +620,7 @@ export function App() {
                           className={`market-row ${row.symbol === selectedSymbol ? "selected-row" : ""}`}
                           key={row.symbol}
                           type="button"
-                          onClick={() => setSelectedSymbol(row.symbol)}
+                          onClick={() => openAnalysis(row.symbol)}
                         >
                           <div className="market-row-left">
                             <img

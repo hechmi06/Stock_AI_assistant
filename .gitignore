@@ -13,3 +13,4 @@ __pycache__/
 *.log
 eval_report.json
 data/
+mcp-server/.cache/

@@ -200,12 +200,44 @@ export type OrchestratedAnalysis = {
     price: number | null;
     change_percent: number | null;
     sources_used: string[];
+    historical_prices: Array<{
+      date: string;
+      open: number | null;
+      high: number | null;
+      low: number | null;
+      close: number;
+      volume: number | null;
+    }>;
     company_profile: {
       name: string | null;
       sector: string | null;
       industry: string | null;
+      country: string | null;
+      website: string | null;
       market_cap: number | null;
+      currency: string | null;
+      exchange: string | null;
     };
+    financial_ratios: Record<string, number | null>;
+    financial_statements_summary: {
+      fiscal_date: string | null;
+      total_revenue: number | null;
+      net_income: number | null;
+      total_assets: number | null;
+      total_debt: number | null;
+      operating_cashflow: number | null;
+    };
+    warnings: string[];
+    errors: string[];
+    raw_price: {
+      ticker: string;
+      price: number | null;
+      change_percent: number | null;
+      currency: string | null;
+      exchange: string | null;
+      market_state: string | null;
+      source: string;
+    } | null;
   };
   technical: {
     status: AnalysisStatus;
@@ -215,6 +247,12 @@ export type OrchestratedAnalysis = {
     trend: "bullish" | "bearish" | "neutral";
     support_level: number | null;
     resistance_level: number | null;
+    volume_analysis: {
+      last_volume: number | null;
+      average_volume: number | null;
+      volume_ratio: number | null;
+      interpretation: string;
+    };
     technical_score: number | null;
     signal: "positive" | "negative" | "neutral";
   };

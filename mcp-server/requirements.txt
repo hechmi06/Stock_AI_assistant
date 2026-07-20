@@ -1,4 +1,4 @@
-yfinance==0.2.52
+yfinance==1.5.1
 pandas==2.2.3
 # Optionnel : extraction du texte d'article pour le NewsAgent (NEWS_EXTRACT_CONTENT=true)
 # lxml_html_clean est requis par trafilatura >= 2 (module lxml.html.clean externalise).

@@ -148,6 +148,10 @@ const QUOTE_BATCH_SIZE = 8;
 const QUOTE_BATCH_DELAY_MS = 900;
 const FINNHUB_QUOTE_DELAY_MS = 120;
 const MARKET_DASHBOARD_CACHE_MS = 60_000;
+const configuredMarketDataCacheSeconds = Number(process.env.MCP_MARKET_DATA_CACHE_TTL_SECONDS ?? 900);
+const MARKET_DATA_CACHE_MS = Number.isFinite(configuredMarketDataCacheSeconds)
+  ? Math.max(0, configuredMarketDataCacheSeconds * 1000)
+  : 15 * 60 * 1000;
 
 export type UsStockEntry = { symbol: string; name: string };
 
@@ -964,7 +968,7 @@ export async function getMarketData(ticker: string, period = "6mo"): Promise<Mar
   const cacheKey = `${symbol}:${period}`;
   const now = Date.now();
   const cached = marketDataCache[cacheKey];
-  if (cached && now - cached.timestamp < 60_000) {
+  if (cached && now - cached.timestamp < MARKET_DATA_CACHE_MS) {
     return cached.payload;
   }
 
