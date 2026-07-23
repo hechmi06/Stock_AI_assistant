@@ -26,6 +26,8 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { AgentMetrics } from "./components/AgentMetrics";
 import { FullAnalysis } from "./components/FullAnalysis";
 import { NewsFeed } from "./components/NewsFeed";
+import { PortfolioDashboard } from "./components/PortfolioDashboard";
+import { PortfolioRecommendation } from "./components/PortfolioRecommendation";
 import { fetchMarketDashboard } from "./services/analysisApi";
 import type { MarketDashboard, MarketRow } from "./types";
 
@@ -330,7 +332,7 @@ export function App() {
   const [dashboard, setDashboard] = useState<MarketDashboard>(fallbackDashboard);
   const [selectedSymbol, setSelectedSymbol] = useState("AAPL");
   const [loading, setLoading] = useState(false);
-  const [view, setView] = useState<"trading" | "analysis" | "dashboard">("trading");
+  const [view, setView] = useState<"trading" | "analysis" | "portfolio" | "recommendation" | "dashboard">("trading");
   const [marketPage, setMarketPage] = useState(1);
 
   async function loadDashboard(page = marketPage) {
@@ -395,11 +397,14 @@ export function App() {
             <button type="button" title="Assistant IA">
               <BrainCircuit size={20} />
             </button>
-            <button className="active" type="button" title="Trading">
+            <button className={view === "trading" ? "active" : ""} type="button" title="Trading" onClick={() => setView("trading")}>
               <LineChart size={20} />
             </button>
-            <button type="button" title="Positions">
+            <button className={view === "portfolio" ? "active" : ""} type="button" title="Portefeuille" onClick={() => setView("portfolio")}>
               <WalletCards size={20} />
+            </button>
+            <button className={view === "recommendation" ? "active" : ""} type="button" title="Portefeuille recommande" onClick={() => setView("recommendation")}>
+              <Sparkles size={20} />
             </button>
             <button type="button" title="Dossiers">
               <Folder size={20} />
@@ -454,6 +459,20 @@ export function App() {
                   <BrainCircuit size={15} /> Analyse IA
                 </button>
                 <button
+                  className={view === "portfolio" ? "selected" : ""}
+                  type="button"
+                  onClick={() => setView("portfolio")}
+                >
+                  <WalletCards size={15} /> Portefeuille
+                </button>
+                <button
+                  className={view === "recommendation" ? "selected" : ""}
+                  type="button"
+                  onClick={() => setView("recommendation")}
+                >
+                  <Sparkles size={15} /> Recommandation
+                </button>
+                <button
                   className={view === "dashboard" ? "selected" : ""}
                   type="button"
                   onClick={() => setView("dashboard")}
@@ -474,6 +493,10 @@ export function App() {
           {/* Content */}
           {view === "dashboard" ? (
             <AgentMetrics />
+          ) : view === "recommendation" ? (
+            <PortfolioRecommendation onOpenAnalysis={openAnalysis} />
+          ) : view === "portfolio" ? (
+            <PortfolioDashboard onOpenAnalysis={openAnalysis} />
           ) : view === "analysis" ? (
             <FullAnalysis ticker={selectedSymbol} />
           ) : (
@@ -485,7 +508,7 @@ export function App() {
                 <div className="portfolio-strip-head">
                   <BriefcaseBusiness size={17} />
                   <div>
-                    <span>Portefeuille</span>
+                    <span>Trading simule</span>
                     <strong>Positions du jour</strong>
                   </div>
                   <div className={`portfolio-pnl ${totalPnl >= 0 ? "positive" : "negative"}`}>

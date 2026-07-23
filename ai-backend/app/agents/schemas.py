@@ -277,3 +277,314 @@ class OrchestratedAnalysis(BaseModel):
     rag: RagResult
     risk: RiskResult
     synthesis: SynthesisResult
+
+
+PortfolioDiversificationLevel = Literal["low", "medium", "high"]
+
+
+class PortfolioHoldingInput(BaseModel):
+    ticker: str = Field(min_length=1, max_length=15)
+    quantity: float = Field(gt=0)
+    average_cost: float = Field(ge=0)
+
+
+class PortfolioAnalysisRequest(BaseModel):
+    holdings: list[PortfolioHoldingInput] = Field(min_length=1, max_length=50)
+    cash: float = Field(default=0, ge=0)
+    base_currency: str = Field(default="USD", min_length=3, max_length=3)
+    benchmark_ticker: str = Field(default="SPY", min_length=1, max_length=15)
+    risk_free_rate_percent: float = Field(default=0, ge=-100, le=100)
+
+
+class PortfolioTechnicalSnapshot(BaseModel):
+    status: MarketDataStatus = "failed"
+    rsi: float | None = None
+    sma_20: float | None = None
+    sma_50: float | None = None
+    volatility: float | None = None
+    trend: TrendDirection = "neutral"
+    support_level: float | None = None
+    resistance_level: float | None = None
+    technical_score: int | None = None
+    signal: TechnicalSignal = "neutral"
+
+
+class PortfolioPositionResult(BaseModel):
+    ticker: str
+    name: str | None = None
+    sector: str = "Unknown"
+    quantity: float
+    average_cost: float
+    current_price: float | None = None
+    cost_basis: float
+    market_value: float | None = None
+    unrealized_pnl: float | None = None
+    unrealized_pnl_percent: float | None = None
+    day_change_percent: float | None = None
+    day_pnl: float | None = None
+    weight: float = Field(default=0, ge=0, le=100)
+    currency: str | None = None
+    data_status: MarketDataStatus = "failed"
+    sources_used: list[MarketDataSource] = Field(default_factory=list)
+    warnings: list[str] = Field(default_factory=list)
+    technical: PortfolioTechnicalSnapshot = Field(default_factory=PortfolioTechnicalSnapshot)
+
+
+class PortfolioAllocation(BaseModel):
+    label: str
+    value: float = Field(ge=0)
+    weight: float = Field(ge=0, le=100)
+
+
+class PortfolioSummary(BaseModel):
+    total_value: float = 0
+    invested_value: float = 0
+    cash: float = 0
+    total_cost: float = 0
+    unrealized_pnl: float = 0
+    unrealized_pnl_percent: float | None = None
+    day_pnl: float = 0
+    day_change_percent: float | None = None
+
+
+class PortfolioRiskSummary(BaseModel):
+    concentration_score: int = Field(default=0, ge=0, le=100)
+    concentration_level: RiskLevel = "low"
+    diversification_score: int = Field(default=0, ge=0, le=100)
+    diversification_level: PortfolioDiversificationLevel = "low"
+    largest_position_ticker: str | None = None
+    largest_position_weight: float = Field(default=0, ge=0, le=100)
+    top_three_weight: float = Field(default=0, ge=0, le=100)
+    effective_holdings: float = Field(default=0, ge=0)
+    data_confidence_score: int = Field(default=0, ge=0, le=100)
+    data_confidence_level: RiskLevel = "low"
+
+
+class PortfolioCorrelation(BaseModel):
+    ticker_a: str
+    ticker_b: str
+    correlation: float = Field(ge=-1, le=1)
+
+
+class PortfolioPerformanceMetrics(BaseModel):
+    benchmark_ticker: str = "SPY"
+    observation_count: int = Field(default=0, ge=0)
+    period_start: str | None = None
+    period_end: str | None = None
+    cumulative_return_percent: float | None = None
+    annualized_return_percent: float | None = None
+    annualized_volatility_percent: float | None = None
+    benchmark_cumulative_return_percent: float | None = None
+    benchmark_annualized_return_percent: float | None = None
+    benchmark_annualized_volatility_percent: float | None = None
+    beta: float | None = None
+    sharpe_ratio: float | None = None
+    treynor_ratio_percent: float | None = None
+    jensen_alpha_percent: float | None = None
+    max_drawdown_percent: float | None = None
+    average_correlation: float | None = None
+
+
+class PortfolioTechnicalSummary(BaseModel):
+    weighted_score: float | None = None
+    bullish_positions: int = 0
+    neutral_positions: int = 0
+    bearish_positions: int = 0
+    overbought_positions: int = 0
+    oversold_positions: int = 0
+
+
+class PortfolioAnalysisResult(BaseModel):
+    status: MarketDataStatus
+    generated_at: datetime
+    base_currency: str = "USD"
+    positions: list[PortfolioPositionResult] = Field(default_factory=list)
+    summary: PortfolioSummary = Field(default_factory=PortfolioSummary)
+    allocation_by_holding: list[PortfolioAllocation] = Field(default_factory=list)
+    allocation_by_sector: list[PortfolioAllocation] = Field(default_factory=list)
+    risk: PortfolioRiskSummary = Field(default_factory=PortfolioRiskSummary)
+    performance: PortfolioPerformanceMetrics = Field(default_factory=PortfolioPerformanceMetrics)
+    technical_summary: PortfolioTechnicalSummary = Field(default_factory=PortfolioTechnicalSummary)
+    correlations: list[PortfolioCorrelation] = Field(default_factory=list)
+    sources_used: list[MarketDataSource] = Field(default_factory=list)
+    warnings: list[str] = Field(default_factory=list)
+    errors: list[str] = Field(default_factory=list)
+
+
+PortfolioVerdict = Literal[
+    "robuste",
+    "coherent",
+    "a_reequilibrer",
+    "fragile",
+    "donnees_insuffisantes",
+]
+PortfolioPositionDecision = Literal[
+    "renforcer",
+    "conserver",
+    "reduire",
+    "ecarter",
+    "non_evaluable",
+]
+
+
+class PortfolioHoldingAnalysis(BaseModel):
+    """Vue compacte d'une analyse mono-action, figee pour le portefeuille."""
+
+    ticker: str
+    status: MarketDataStatus
+    global_score: int = Field(default=0, ge=0, le=100)
+    recommendation: SynthesisRecommendation = "donnees_insuffisantes"
+    confidence_score: int = Field(default=0, ge=0, le=100)
+    risk_score: int = Field(default=100, ge=0, le=100)
+    risk_level: RiskLevel = "high"
+    technical_score: int = Field(default=50, ge=0, le=100)
+    fundamental_score: int = Field(default=50, ge=0, le=100)
+    news_score: int = Field(default=50, ge=0, le=100)
+    summary: str = ""
+    key_risks: list[str] = Field(default_factory=list)
+    sources: list[str] = Field(default_factory=list)
+
+
+class PortfolioSynthesisScores(BaseModel):
+    individual_quality: int = Field(default=0, ge=0, le=100)
+    diversification: int = Field(default=0, ge=0, le=100)
+    risk_adjusted_performance: int = Field(default=0, ge=0, le=100)
+    technical_alignment: int = Field(default=0, ge=0, le=100)
+    data_quality: int = Field(default=0, ge=0, le=100)
+
+
+class PortfolioPositionAssessment(BaseModel):
+    ticker: str
+    current_weight: float = Field(default=0, ge=0, le=100)
+    target_weight: float = Field(default=0, ge=0, le=100)
+    global_score: int | None = Field(default=None, ge=0, le=100)
+    confidence_score: int = Field(default=0, ge=0, le=100)
+    risk_level: RiskLevel = "high"
+    decision: PortfolioPositionDecision = "non_evaluable"
+    rationale: str = ""
+
+
+class PortfolioRebalancingItem(BaseModel):
+    label: str
+    current_weight: float = Field(default=0, ge=0, le=100)
+    target_weight: float = Field(default=0, ge=0, le=100)
+    change_percent: float = Field(default=0, ge=-100, le=100)
+    action: PortfolioPositionDecision | Literal["reserve", "diversifier"]
+    rationale: str = ""
+
+
+class PortfolioSynthesisResult(BaseModel):
+    status: MarketDataStatus
+    verdict: PortfolioVerdict = "donnees_insuffisantes"
+    global_score: int = Field(default=0, ge=0, le=100)
+    confidence_score: int = Field(default=0, ge=0, le=100)
+    confidence_level: RiskLevel = "low"
+    scores: PortfolioSynthesisScores = Field(default_factory=PortfolioSynthesisScores)
+    weights: dict[str, float] = Field(default_factory=dict)
+    summary: str = ""
+    strengths: list[str] = Field(default_factory=list)
+    weaknesses: list[str] = Field(default_factory=list)
+    position_assessments: list[PortfolioPositionAssessment] = Field(default_factory=list)
+    rebalancing_plan: list[PortfolioRebalancingItem] = Field(default_factory=list)
+    analyzed_positions: int = Field(default=0, ge=0)
+    requested_positions: int = Field(default=0, ge=0)
+    warnings: list[str] = Field(default_factory=list)
+    errors: list[str] = Field(default_factory=list)
+    slm_summary: SlmSummary | None = None
+
+
+class PortfolioCompleteAnalysisResult(BaseModel):
+    status: MarketDataStatus
+    generated_at: datetime
+    workflow: str = "portfolio_multi_agent"
+    portfolio: PortfolioAnalysisResult
+    individual_analyses: list[PortfolioHoldingAnalysis] = Field(default_factory=list)
+    synthesis: PortfolioSynthesisResult
+
+
+InvestorRiskProfile = Literal["conservative", "moderate", "dynamic"]
+InvestmentObjective = Literal["preservation", "balanced", "growth"]
+
+
+class UniverseInstrument(BaseModel):
+    """Un candidat de l'univers de screening (le plateau d'entree des agents).
+
+    Ne contient aucune donnee de marche : uniquement le ticker, son secteur et les
+    profils auxquels il peut convenir. Le jugement (scores, selection, ponderation)
+    est fait par les agents sur des donnees reelles collectees a l'execution.
+    """
+
+    ticker: str
+    name: str | None = None
+    sector: str = "Unknown"
+    eligible_profiles: list[InvestorRiskProfile] = Field(
+        default_factory=lambda: ["conservative", "moderate", "dynamic"]
+    )
+    currency: str = "USD"
+
+
+class PortfolioRecommendationRequest(BaseModel):
+    budget: float = Field(gt=0)
+    risk_profile: InvestorRiskProfile = "moderate"
+    objective: InvestmentObjective = "balanced"
+    horizon_years: int = Field(default=5, ge=1, le=30)
+    max_positions: int = Field(default=5, ge=3, le=8)
+    cash_reserve_percent: float | None = Field(default=None, ge=0, le=50)
+    benchmark_ticker: str = Field(default="SPY", min_length=1, max_length=15)
+    risk_free_rate_percent: float = Field(default=0, ge=-100, le=100)
+    base_currency: str = Field(default="USD", min_length=3, max_length=3)
+    excluded_tickers: list[str] = Field(default_factory=list, max_length=20)
+
+
+class RecommendationCandidateScore(BaseModel):
+    ticker: str
+    name: str | None = None
+    sector: str = "Unknown"
+    status: MarketDataStatus = "failed"
+    total_score: int = Field(default=0, ge=0, le=100)
+    fundamental_score: int = Field(default=0, ge=0, le=100)
+    technical_score: int = Field(default=0, ge=0, le=100)
+    stability_score: int = Field(default=0, ge=0, le=100)
+    momentum_score: int = Field(default=0, ge=0, le=100)
+    data_quality_score: int = Field(default=0, ge=0, le=100)
+    value_score: int = Field(default=0, ge=0, le=100)
+    growth_score: int = Field(default=0, ge=0, le=100)
+    potential_label: str | None = None
+    current_price: float | None = None
+    volatility: float | None = None
+    reasons: list[str] = Field(default_factory=list)
+    rejection_reason: str | None = None
+
+
+class RecommendedAllocation(BaseModel):
+    ticker: str
+    name: str | None = None
+    sector: str = "Unknown"
+    weight: float = Field(ge=0, le=100)
+    amount: float = Field(ge=0)
+    quantity: float = Field(ge=0)
+    reference_price: float = Field(gt=0)
+    screening_score: int = Field(ge=0, le=100)
+    potential_label: str | None = None
+    role: str
+    reasons: list[str] = Field(default_factory=list)
+
+
+class PortfolioRecommendationResult(BaseModel):
+    status: MarketDataStatus
+    generated_at: datetime
+    workflow: str = "portfolio_recommendation"
+    profile: PortfolioRecommendationRequest
+    universe: list[str] = Field(default_factory=list)
+    candidates: list[RecommendationCandidateScore] = Field(default_factory=list)
+    allocations: list[RecommendedAllocation] = Field(default_factory=list)
+    cash_amount: float = Field(default=0, ge=0)
+    cash_weight: float = Field(default=0, ge=0, le=100)
+    summary: str = ""
+    selection_method: list[str] = Field(default_factory=list)
+    strengths: list[str] = Field(default_factory=list)
+    risks: list[str] = Field(default_factory=list)
+    portfolio_analysis: PortfolioCompleteAnalysisResult | None = None
+    warnings: list[str] = Field(default_factory=list)
+    errors: list[str] = Field(default_factory=list)
+    slm_summary: SlmSummary | None = None

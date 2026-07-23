@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import os
 import re
+import threading
 import uuid
 from pathlib import Path
 
@@ -146,20 +147,28 @@ class RagAgent:
         self.slm_client = slm_client or NebiusClient.for_agent("rag")
         self.graph = graph
         self._client = None
+        # Qdrant en mode local embarque est mono-writer et n'est pas concu pour
+        # l'acces concurrent : ce verrou serialise toutes les operations Qdrant
+        # (init, search, count, upsert, delete) quand plusieurs threads du
+        # workflow portefeuille interrogent le RAG en parallele.
+        self._lock = threading.RLock()
 
     # -- Qdrant (chargement paresseux pour ne pas verrouiller le chemin au boot) --
     def _qdrant(self):
         if self._client is None:
-            from qdrant_client import QdrantClient
-            from qdrant_client.models import Distance, VectorParams
+            with self._lock:
+                if self._client is None:
+                    from qdrant_client import QdrantClient
+                    from qdrant_client.models import Distance, VectorParams
 
-            self._client = QdrantClient(**_qdrant_location())
-            existing = {c.name for c in self._client.get_collections().collections}
-            if _collection_name() not in existing:
-                self._client.create_collection(
-                    collection_name=_collection_name(),
-                    vectors_config=VectorParams(size=EMBEDDING_DIM, distance=Distance.COSINE),
-                )
+                    client = QdrantClient(**_qdrant_location())
+                    existing = {c.name for c in client.get_collections().collections}
+                    if _collection_name() not in existing:
+                        client.create_collection(
+                            collection_name=_collection_name(),
+                            vectors_config=VectorParams(size=EMBEDDING_DIM, distance=Distance.COSINE),
+                        )
+                    self._client = client
         return self._client
 
     def _point_id(self, url: str, index: int) -> str:
@@ -229,7 +238,8 @@ class RagAgent:
                 self._delete_existing_chunks(symbol, url)
             except Exception as error:
                 warnings.append(f"Ancienne version du document non supprimee avant upsert: {error}")
-            self._qdrant().upsert(collection_name=_collection_name(), points=points)
+            with self._lock:
+                self._qdrant().upsert(collection_name=_collection_name(), points=points)
             documents.append(
                 RagDocument(
                     form=filing.get("form") or "",
@@ -285,13 +295,14 @@ class RagAgent:
         grouped_hits = []
         hits_by_key = {}
         for query_vector in query_vectors:
-            group = self._qdrant().search(
-                collection_name=_collection_name(),
-                query_vector=query_vector,
-                query_filter=query_filter,
-                limit=per_query_limit,
-                with_payload=True,
-            )
+            with self._lock:
+                group = self._qdrant().search(
+                    collection_name=_collection_name(),
+                    query_vector=query_vector,
+                    query_filter=query_filter,
+                    limit=per_query_limit,
+                    with_payload=True,
+                )
             grouped_hits.append(group)
             for hit in group:
                 key = self._hit_key(hit)
@@ -373,11 +384,12 @@ class RagAgent:
         try:
             from qdrant_client.models import FieldCondition, Filter, MatchValue
 
-            result = self._qdrant().count(
-                collection_name=_collection_name(),
-                count_filter=Filter(must=[FieldCondition(key="ticker", match=MatchValue(value=ticker))]),
-                exact=True,
-            )
+            with self._lock:
+                result = self._qdrant().count(
+                    collection_name=_collection_name(),
+                    count_filter=Filter(must=[FieldCondition(key="ticker", match=MatchValue(value=ticker))]),
+                    exact=True,
+                )
             return int(result.count)
         except Exception:
             return 0
@@ -385,16 +397,17 @@ class RagAgent:
     def _delete_existing_chunks(self, ticker: str, url: str) -> None:
         from qdrant_client.models import FieldCondition, Filter, MatchValue
 
-        self._qdrant().delete(
-            collection_name=_collection_name(),
-            points_selector=Filter(
-                must=[
-                    FieldCondition(key="ticker", match=MatchValue(value=ticker)),
-                    FieldCondition(key="url", match=MatchValue(value=url)),
-                ]
-            ),
-            wait=True,
-        )
+        with self._lock:
+            self._qdrant().delete(
+                collection_name=_collection_name(),
+                points_selector=Filter(
+                    must=[
+                        FieldCondition(key="ticker", match=MatchValue(value=ticker)),
+                        FieldCondition(key="url", match=MatchValue(value=url)),
+                    ]
+                ),
+                wait=True,
+            )
 
     def _remember(self, ticker: str, filing: dict) -> None:
         if self.graph is None:

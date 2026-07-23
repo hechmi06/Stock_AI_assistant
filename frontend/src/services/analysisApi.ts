@@ -1,5 +1,83 @@
 import { mockStocks } from "../data/mockStocks";
-import type { EvaluationReport, MarketDashboard, NewsResult, OrchestratedAnalysis, StockAnalysis, UsStockSearchResult } from "../types";
+import type { EvaluationReport, MarketDashboard, NewsResult, OrchestratedAnalysis, PortfolioAnalysis, PortfolioCompleteAnalysis, PortfolioHolding, PortfolioRecommendation, PortfolioRecommendationRequest, StockAnalysis, UsStockSearchResult } from "../types";
+
+export async function analyzePortfolio(
+  holdings: PortfolioHolding[],
+  cash: number,
+  fresh = false,
+  benchmarkTicker = "SPY",
+  riskFreeRatePercent = 0,
+): Promise<PortfolioAnalysis> {
+  const response = await fetch(`/api/portfolio/analyze?fresh=${fresh}`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      holdings,
+      cash,
+      base_currency: "USD",
+      benchmark_ticker: benchmarkTicker,
+      risk_free_rate_percent: riskFreeRatePercent,
+    }),
+  });
+  if (!response.ok) {
+    throw new Error(`Gateway returned ${response.status}`);
+  }
+  return await response.json();
+}
+
+export async function analyzeCompletePortfolio(
+  holdings: PortfolioHolding[],
+  cash: number,
+  fresh = false,
+  benchmarkTicker = "SPY",
+  riskFreeRatePercent = 0,
+  withPortfolioSlm = true,
+): Promise<PortfolioCompleteAnalysis> {
+  const response = await fetch(
+    `/api/portfolio/full-analysis?fresh=${fresh}&withPortfolioSlm=${withPortfolioSlm}`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        holdings,
+        cash,
+        base_currency: "USD",
+        benchmark_ticker: benchmarkTicker,
+        risk_free_rate_percent: riskFreeRatePercent,
+      }),
+    },
+  );
+  if (!response.ok) {
+    throw new Error(`Gateway returned ${response.status}`);
+  }
+  return await response.json();
+}
+
+export async function recommendPortfolio(
+  request: PortfolioRecommendationRequest,
+  fresh = false,
+  withSlm = true,
+): Promise<PortfolioRecommendation> {
+  const response = await fetch(
+    `/api/portfolio/recommend?fresh=${fresh}&withSlm=${withSlm}`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(request),
+    },
+  );
+  if (!response.ok) {
+    let message = `Gateway returned ${response.status}`;
+    try {
+      const payload = await response.json() as { message?: string };
+      message = payload.message || message;
+    } catch {
+      // Keep the HTTP status when the gateway response is not JSON.
+    }
+    throw new Error(message);
+  }
+  return await response.json();
+}
 
 export async function fetchFullAnalysis(ticker: string, fresh = false): Promise<OrchestratedAnalysis> {
   const normalizedTicker = ticker.trim().toUpperCase();

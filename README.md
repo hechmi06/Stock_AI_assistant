@@ -17,9 +17,12 @@ Agents deja implementes :
 | `NewsAgent` | Fait | Recupere les actualites, deduplique les articles, analyse le sentiment via SLM |
 | `RiskAgent` | Fait | Combine MarketData + Technical + News pour produire un diagnostic de risque |
 | `RAGAgent` | Fait | Indexe les 10-K/10-Q SEC EDGAR et repond aux questions avec passages sources |
+| `PortfolioAgent` | Fait | Valorise les positions, agrege TechnicalAgent et calcule performance/risque du portefeuille |
+| `PortfolioSynthesisAgent` | Fait | Combine les analyses individuelles, produit un verdict et un reequilibrage simule avec son propre SLM |
+| `PortfolioRecommendationAgent` | Fait | Compose un portefeuille selon le profil utilisateur et justifie chaque allocation avec son propre SLM |
 | `SocialSentimentAgent` | Planifie | Analysera Reddit/X comme signal social separe des news officielles |
-| `SynthesisAgent` | Pas encore fait | Produira la synthese finale et la recommandation simulee |
-| Orchestrateur LangGraph | Pas encore fait | Appellera les agents dans le bon ordre selon la question utilisateur |
+| `SynthesisAgent` | Fait | Produit une synthese finale et une recommandation simulee |
+| Orchestrateur LangGraph | Fait | Execute les agents dans leur ordre de dependance avec une trace |
 
 Etat fonctionnel actuel :
 
@@ -36,17 +39,73 @@ MarketDataAgent  http://localhost:8000/agents/market-data/MSFT?fresh=true
 TechnicalAgent   http://localhost:8000/agents/technical/MSFT?fresh=true
 NewsAgent        http://localhost:8000/agents/news/MSFT?fresh=true
 RiskAgent        http://localhost:8000/agents/risk/MSFT?fresh=true
+PortfolioAgent   POST http://localhost:8000/agents/portfolio/analyze
+Portfolio complet POST http://localhost:8000/agents/portfolio/full-analysis
+Recommandation   POST http://localhost:8000/agents/portfolio/recommend
 Gateway Swagger  http://localhost:3000/api/docs
 Backend Swagger  http://localhost:8000/docs
 ```
 
-Le dernier travail effectue concerne `RiskAgent` :
+Le dernier travail effectue concerne le MVP `PortfolioAgent` :
 
-- correction du prompt SLM pour forcer les scores en `/100` et pas en `/10` ;
-- ajout de `data_confidence_score` ;
-- ajout de `data_confidence_level` ;
-- ajout de risques `data_quality` pour les quotas API, sources partielles et NewsAgent partiel ;
-- sauvegarde de la confiance des donnees dans le knowledge graph.
+- saisie de positions actions long-only (`ticker`, quantite, prix moyen) et liquidites USD ;
+- valorisation par le `MarketDataAgent`, sans nouvel appel direct aux fournisseurs ;
+- calcul du cout, de la valeur, du P&L latent et du P&L journalier estime ;
+- allocations par titre et par secteur, avec normalisation des libelles ;
+- scores de concentration, diversification et confiance des donnees ;
+- rendement cumule et annualise, volatilite annualisee et drawdown maximal ;
+- beta, Sharpe, Treynor et alpha de Jensen par rapport a un benchmark configurable ;
+- correlations entre les actions et score technique pondere ;
+- RSI, SMA 20/50, tendance, support/resistance et score technique par position ;
+- endpoint FastAPI `POST /agents/portfolio/analyze` ;
+- endpoint Swagger NestJS `POST /api/portfolio/analyze` ;
+- vue desktop Portefeuille, sauvegardee dans le `localStorage` du navigateur.
+- endpoint complet `POST /agents/portfolio/full-analysis` et proxy
+  `POST /api/portfolio/full-analysis` ;
+- execution de MarketData, Technical, News, RAG, Risk et Synthesis pour chaque
+  position, puis compactage de leurs resultats ;
+- `PortfolioSynthesisAgent` independant avec score global, verdict, forces,
+  faiblesses, decisions par ligne et plan de reequilibrage simule ;
+- prompt et modele SLM separes via `NEBIUS_MODEL_PORTFOLIO_SYNTHESIS` ;
+- le SLM portefeuille ne modifie jamais les scores, le verdict ou les poids,
+  tous calcules par des regles deterministes.
+
+Limites volontaires du MVP : les performances sont calculees sur les prix (hors
+dividendes et frais) avec des ponderations statiques. Pas encore de vente a
+decouvert, options, conversion multi-devises, transactions historiques ni
+optimisation mathematique de portefeuille. Le reequilibrage actuel est une
+simulation heuristique avec plafond de 30% par ligne et 40% par secteur. EMA,
+MACD, stochastique et bandes de Bollinger restent a ajouter au TechnicalAgent.
+
+Les deux syntheses restent independantes :
+
+```txt
+Analyse mono-action
+  -> SynthesisAgent
+  -> prompt/model/memoire mono-action
+
+Analyse portefeuille
+  -> analyses individuelles sans reecriture SLM de leur synthese
+  -> PortfolioSynthesisAgent
+  -> prompt/model portefeuille separe
+```
+
+Lancer une analyse portefeuille ne remplace donc jamais la page ni le resultat
+d'une analyse mono-action.
+
+Le `PortfolioRecommendationAgent` constitue un troisieme workflow independant :
+
+- entrees utilisateur : budget, profil de risque, objectif, horizon, nombre de
+  positions, reserve de liquidites, benchmark et exclusions ;
+- screening de quinze grandes capitalisations americaines sur les fondamentaux,
+  la technique, la stabilite, le momentum et la qualite des donnees ;
+- selection sectorielle diversifiee et allocation plafonnee par ligne/secteur ;
+- validation des finalistes par le workflow multi-agents complet ;
+- argumentaire detaille produit par un SLM dedie, sans pouvoir changer les
+  entreprises, les scores ou les poids calcules ;
+- endpoint FastAPI `POST /agents/portfolio/recommend` et endpoint gateway
+  `POST /api/portfolio/recommend` ;
+- vue frontend separee **Recommandation**.
 
 ## Objectif du projet
 
@@ -611,9 +670,11 @@ NEBIUS_API_KEY=your_nebius_api_key_here
 NEBIUS_ENABLED=true
 NEBIUS_BASE_URL=https://api.studio.nebius.com/v1
 NEBIUS_MODEL=Qwen/Qwen3-30B-A3B-Instruct-2507
+NEBIUS_MODEL_PORTFOLIO_SYNTHESIS=Qwen/Qwen3-30B-A3B-Instruct-2507
+NEBIUS_MODEL_PORTFOLIO_RECOMMENDATION=Qwen/Qwen3-30B-A3B-Instruct-2507
 ```
 
-Le SLM s'active automatiquement des que `NEBIUS_API_KEY` est renseignee (et `NEBIUS_ENABLED` different de `false`). Les agents `MarketDataAgent`, `TechnicalAgent`, `NewsAgent` et `RiskAgent` utilisent `NEBIUS_MODEL`.
+Le SLM s'active automatiquement des que `NEBIUS_API_KEY` est renseignee (et `NEBIUS_ENABLED` different de `false`). Les agents `MarketDataAgent`, `TechnicalAgent`, `NewsAgent` et `RiskAgent` utilisent `NEBIUS_MODEL`. Le `PortfolioSynthesisAgent` utilise `NEBIUS_MODEL_PORTFOLIO_SYNTHESIS` et le `PortfolioRecommendationAgent` utilise `NEBIUS_MODEL_PORTFOLIO_RECOMMENDATION`, avec repli sur `NEBIUS_MODEL` si leur variable dediee est absente.
 
 Remarque : selon le compte, la base URL peut etre `https://api.studio.nebius.com/v1` ou `https://api.tokenfactory.nebius.com/v1`. Ajuster `NEBIUS_BASE_URL` si besoin.
 

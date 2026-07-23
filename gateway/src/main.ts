@@ -14,6 +14,7 @@ async function bootstrap() {
     .setDescription("Gateway API pour tester les agents d'analyse boursiere.")
     .setVersion("0.1.0")
     .addTag("stocks", "Analyse boursiere et donnees marche")
+    .addTag("portfolio", "Valorisation et analyse de portefeuille")
     .build();
   const swaggerDocument = SwaggerModule.createDocument(app, swaggerConfig);
   SwaggerModule.setup("api/docs", app, swaggerDocument);

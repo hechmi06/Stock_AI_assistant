@@ -281,3 +281,255 @@ export type OrchestratedAnalysis = {
   };
   synthesis: SynthesisResult;
 };
+
+export type PortfolioHolding = {
+  ticker: string;
+  quantity: number;
+  average_cost: number;
+};
+
+export type PortfolioPosition = PortfolioHolding & {
+  name: string | null;
+  sector: string;
+  current_price: number | null;
+  cost_basis: number;
+  market_value: number | null;
+  unrealized_pnl: number | null;
+  unrealized_pnl_percent: number | null;
+  day_change_percent: number | null;
+  day_pnl: number | null;
+  weight: number;
+  currency: string | null;
+  data_status: AnalysisStatus;
+  sources_used: string[];
+  warnings: string[];
+  technical: {
+    status: AnalysisStatus;
+    rsi: number | null;
+    sma_20: number | null;
+    sma_50: number | null;
+    volatility: number | null;
+    trend: "bullish" | "bearish" | "neutral";
+    support_level: number | null;
+    resistance_level: number | null;
+    technical_score: number | null;
+    signal: "positive" | "negative" | "neutral";
+  };
+};
+
+export type PortfolioAllocation = {
+  label: string;
+  value: number;
+  weight: number;
+};
+
+export type PortfolioAnalysis = {
+  status: AnalysisStatus;
+  generated_at: string;
+  base_currency: string;
+  positions: PortfolioPosition[];
+  summary: {
+    total_value: number;
+    invested_value: number;
+    cash: number;
+    total_cost: number;
+    unrealized_pnl: number;
+    unrealized_pnl_percent: number | null;
+    day_pnl: number;
+    day_change_percent: number | null;
+  };
+  allocation_by_holding: PortfolioAllocation[];
+  allocation_by_sector: PortfolioAllocation[];
+  risk: {
+    concentration_score: number;
+    concentration_level: RiskLevel;
+    diversification_score: number;
+    diversification_level: "low" | "medium" | "high";
+    largest_position_ticker: string | null;
+    largest_position_weight: number;
+    top_three_weight: number;
+    effective_holdings: number;
+    data_confidence_score: number;
+    data_confidence_level: RiskLevel;
+  };
+  performance: {
+    benchmark_ticker: string;
+    observation_count: number;
+    period_start: string | null;
+    period_end: string | null;
+    cumulative_return_percent: number | null;
+    annualized_return_percent: number | null;
+    annualized_volatility_percent: number | null;
+    benchmark_cumulative_return_percent: number | null;
+    benchmark_annualized_return_percent: number | null;
+    benchmark_annualized_volatility_percent: number | null;
+    beta: number | null;
+    sharpe_ratio: number | null;
+    treynor_ratio_percent: number | null;
+    jensen_alpha_percent: number | null;
+    max_drawdown_percent: number | null;
+    average_correlation: number | null;
+  };
+  technical_summary: {
+    weighted_score: number | null;
+    bullish_positions: number;
+    neutral_positions: number;
+    bearish_positions: number;
+    overbought_positions: number;
+    oversold_positions: number;
+  };
+  correlations: Array<{
+    ticker_a: string;
+    ticker_b: string;
+    correlation: number;
+  }>;
+  sources_used: string[];
+  warnings: string[];
+  errors: string[];
+};
+
+export type PortfolioVerdict = "robuste" | "coherent" | "a_reequilibrer" | "fragile" | "donnees_insuffisantes";
+export type PortfolioDecision = "renforcer" | "conserver" | "reduire" | "ecarter" | "non_evaluable";
+
+export type PortfolioCompleteAnalysis = {
+  status: AnalysisStatus;
+  generated_at: string;
+  workflow: "portfolio_multi_agent";
+  portfolio: PortfolioAnalysis;
+  individual_analyses: Array<{
+    ticker: string;
+    status: AnalysisStatus;
+    global_score: number;
+    recommendation: SynthesisResult["recommendation"];
+    confidence_score: number;
+    risk_score: number;
+    risk_level: RiskLevel;
+    technical_score: number;
+    fundamental_score: number;
+    news_score: number;
+    summary: string;
+    key_risks: string[];
+    sources: string[];
+  }>;
+  synthesis: {
+    status: AnalysisStatus;
+    verdict: PortfolioVerdict;
+    global_score: number;
+    confidence_score: number;
+    confidence_level: RiskLevel;
+    scores: {
+      individual_quality: number;
+      diversification: number;
+      risk_adjusted_performance: number;
+      technical_alignment: number;
+      data_quality: number;
+    };
+    weights: Record<string, number>;
+    summary: string;
+    strengths: string[];
+    weaknesses: string[];
+    position_assessments: Array<{
+      ticker: string;
+      current_weight: number;
+      target_weight: number;
+      global_score: number | null;
+      confidence_score: number;
+      risk_level: RiskLevel;
+      decision: PortfolioDecision;
+      rationale: string;
+    }>;
+    rebalancing_plan: Array<{
+      label: string;
+      current_weight: number;
+      target_weight: number;
+      change_percent: number;
+      action: PortfolioDecision | "reserve" | "diversifier";
+      rationale: string;
+    }>;
+    analyzed_positions: number;
+    requested_positions: number;
+    warnings: string[];
+    errors: string[];
+    slm_summary: {
+      provider: string;
+      model: string;
+      summary: string;
+      data_quality: string;
+      key_points: string[];
+      warnings: string[];
+    } | null;
+  };
+};
+
+export type InvestorRiskProfile = "conservative" | "moderate" | "dynamic";
+export type InvestmentObjective = "preservation" | "balanced" | "growth";
+
+export type PortfolioRecommendationRequest = {
+  budget: number;
+  risk_profile: InvestorRiskProfile;
+  objective: InvestmentObjective;
+  horizon_years: number;
+  max_positions: number;
+  cash_reserve_percent: number | null;
+  benchmark_ticker: string;
+  risk_free_rate_percent: number;
+  base_currency: "USD";
+  excluded_tickers: string[];
+};
+
+export type PortfolioRecommendation = {
+  status: AnalysisStatus;
+  generated_at: string;
+  workflow: "portfolio_recommendation";
+  profile: PortfolioRecommendationRequest;
+  universe: string[];
+  candidates: Array<{
+    ticker: string;
+    name: string | null;
+    sector: string;
+    status: AnalysisStatus;
+    total_score: number;
+    fundamental_score: number;
+    technical_score: number;
+    stability_score: number;
+    momentum_score: number;
+    data_quality_score: number;
+    value_score: number;
+    growth_score: number;
+    potential_label: string | null;
+    current_price: number | null;
+    volatility: number | null;
+    reasons: string[];
+    rejection_reason: string | null;
+  }>;
+  allocations: Array<{
+    ticker: string;
+    name: string | null;
+    sector: string;
+    weight: number;
+    amount: number;
+    quantity: number;
+    reference_price: number;
+    screening_score: number;
+    potential_label: string | null;
+    role: string;
+    reasons: string[];
+  }>;
+  cash_amount: number;
+  cash_weight: number;
+  summary: string;
+  selection_method: string[];
+  strengths: string[];
+  risks: string[];
+  portfolio_analysis: PortfolioCompleteAnalysis | null;
+  warnings: string[];
+  errors: string[];
+  slm_summary: {
+    provider: string;
+    model: string;
+    summary: string;
+    data_quality: string;
+    key_points: string[];
+    warnings: string[];
+  } | null;
+};

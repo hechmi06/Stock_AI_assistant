@@ -12,6 +12,13 @@ from app.agents import (
     NewsAgent,
     NewsResult,
     OrchestratedAnalysis,
+    PortfolioAgent,
+    PortfolioAnalysisRequest,
+    PortfolioAnalysisResult,
+    PortfolioCompleteAnalysisResult,
+    PortfolioRecommendationRequest,
+    PortfolioRecommendationResult,
+    PortfolioSynthesisAgent,
     RagAgent,
     RagIngestResult,
     RagResult,
@@ -31,7 +38,9 @@ from app.agents.evaluation import (
     evaluate_synthesis,
     evaluate_technical,
 )
+from app.agents.portfolio_recommendation_agent import PortfolioRecommendationAgent
 from app.orchestrator import StockAnalysisOrchestrator
+from app.portfolio_orchestrator import PortfolioAnalysisOrchestrator
 
 
 def _load_root_env() -> None:
@@ -69,6 +78,10 @@ _sanitize_tls_env()
 app = FastAPI(title="Stock AI Assistant Backend", version="0.1.0")
 market_data_agent = MarketDataAgent()
 technical_agent = TechnicalAgent(market_data_agent=market_data_agent)
+portfolio_agent = PortfolioAgent(
+    market_data_agent=market_data_agent,
+    technical_agent=technical_agent,
+)
 news_agent = NewsAgent()
 rag_agent = RagAgent(graph=getattr(market_data_agent.memory, "graph", None))
 risk_agent = RiskAgent(
@@ -84,6 +97,17 @@ analysis_orchestrator = StockAnalysisOrchestrator(
     news_agent=news_agent,
     risk_agent=risk_agent,
     synthesis_agent=synthesis_agent,
+)
+portfolio_synthesis_agent = PortfolioSynthesisAgent()
+portfolio_analysis_orchestrator = PortfolioAnalysisOrchestrator(
+    portfolio_agent=portfolio_agent,
+    stock_orchestrator=analysis_orchestrator,
+    portfolio_synthesis_agent=portfolio_synthesis_agent,
+)
+portfolio_recommendation_agent = PortfolioRecommendationAgent(
+    market_data_agent=market_data_agent,
+    technical_agent=technical_agent,
+    portfolio_orchestrator=portfolio_analysis_orchestrator,
 )
 
 
@@ -360,6 +384,49 @@ def run_market_data_agent(ticker: str, fresh: bool = False) -> MarketDataResult:
 def evaluate_market_data_agent(ticker: str, fresh: bool = False) -> EvaluationReport:
     result = market_data_agent.run(ticker, use_cache=not fresh)
     return evaluate_market_data(result)
+
+
+@app.post("/agents/portfolio/analyze", response_model=PortfolioAnalysisResult)
+def analyze_portfolio(
+    request: PortfolioAnalysisRequest,
+    fresh: bool = False,
+) -> PortfolioAnalysisResult:
+    """Valorise un portefeuille long-only et mesure allocation/concentration."""
+    return portfolio_agent.run(request, use_cache=not fresh)
+
+
+@app.post(
+    "/agents/portfolio/full-analysis",
+    response_model=PortfolioCompleteAnalysisResult,
+)
+def analyze_complete_portfolio(
+    request: PortfolioAnalysisRequest,
+    fresh: bool = False,
+    with_portfolio_slm: bool = True,
+) -> PortfolioCompleteAnalysisResult:
+    """Analyse multi-agents complete avec un SLM portefeuille independant."""
+    return portfolio_analysis_orchestrator.run(
+        request,
+        use_cache=not fresh,
+        with_portfolio_slm=with_portfolio_slm,
+    )
+
+
+@app.post(
+    "/agents/portfolio/recommend",
+    response_model=PortfolioRecommendationResult,
+)
+def recommend_portfolio(
+    request: PortfolioRecommendationRequest,
+    fresh: bool = False,
+    with_slm: bool = True,
+) -> PortfolioRecommendationResult:
+    """Compose et justifie un portefeuille selon le profil utilisateur."""
+    return portfolio_recommendation_agent.run(
+        request,
+        use_cache=not fresh,
+        with_slm=with_slm,
+    )
 
 
 @app.get("/agents/technical/{ticker}", response_model=TechnicalResult)

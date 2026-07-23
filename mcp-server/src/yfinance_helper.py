@@ -293,6 +293,10 @@ def fetch_live_payload(symbol, period):
         "profit_margin": clean_number(info.get("profitMargins")),
         "return_on_equity": clean_number(info.get("returnOnEquity")),
         "beta": clean_number(info.get("beta")),
+        # Signaux forward-looking pour l'estimation de potentiel de rendement.
+        "peg_ratio": clean_number(info.get("trailingPegRatio") or info.get("pegRatio")),
+        "earnings_growth": clean_number(info.get("earningsGrowth")),
+        "revenue_growth": clean_number(info.get("revenueGrowth")),
     }
 
     if rate_limited:

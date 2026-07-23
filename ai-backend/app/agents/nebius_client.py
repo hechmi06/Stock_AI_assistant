@@ -1,5 +1,6 @@
 import json
 import os
+import threading
 from typing import Any
 
 import requests
@@ -7,6 +8,23 @@ import requests
 DEFAULT_BASE_URL = "https://api.studio.nebius.com/v1"
 DEFAULT_MODEL = "Qwen/Qwen3-30B-A3B-Instruct-2507"
 DEFAULT_EMBEDDING_MODEL = "Qwen/Qwen3-Embedding-8B"
+DEFAULT_MAX_CONCURRENCY = 2
+
+
+def _resolve_max_concurrency() -> int:
+    raw = os.getenv("NEBIUS_MAX_CONCURRENCY", "").strip()
+    if not raw:
+        return DEFAULT_MAX_CONCURRENCY
+    try:
+        return max(1, int(raw))
+    except ValueError:
+        return DEFAULT_MAX_CONCURRENCY
+
+
+# Semaphore de CLASSE (partage entre tous les clients/agents) : plafonne le
+# nombre de requetes Nebius simultanees, quel que soit le nombre de threads du
+# workflow portefeuille. Evite les rafales "Too Many Requests" sur le quota SLM.
+_REQUEST_SEMAPHORE = threading.BoundedSemaphore(_resolve_max_concurrency())
 
 
 def resolve_embedding_model() -> str:
@@ -45,6 +63,19 @@ class NebiusClient:
     def for_agent(cls, agent: str) -> "NebiusClient":
         return cls(agent=agent)
 
+    def _post(self, path: str, payload: dict[str, Any], timeout: int) -> requests.Response:
+        """POST Nebius plafonne par le semaphore de concurrence partage."""
+        with _REQUEST_SEMAPHORE:
+            return requests.post(
+                f"{self.base_url}/{path.lstrip('/')}",
+                headers={
+                    "Authorization": f"Bearer {self.api_key}",
+                    "Content-Type": "application/json",
+                },
+                json=payload,
+                timeout=timeout,
+            )
+
     def is_enabled(self) -> bool:
         if not self.api_key:
             return False
@@ -74,6 +105,28 @@ class NebiusClient:
         return self._complete_json(
             self._synthesis_system_prompt(),
             f"SYNTHESE_CALCULEE:\n{json.dumps(payload, ensure_ascii=True)}",
+        )
+
+    def summarize_portfolio_synthesis_data(
+        self, payload: dict[str, Any]
+    ) -> dict[str, Any] | None:
+        """Narration du portefeuille, isolee du SynthesisAgent mono-action."""
+        if not self.is_enabled():
+            return None
+        return self._complete_json(
+            self._portfolio_synthesis_system_prompt(),
+            f"PORTEFEUILLE_CALCULE:\n{json.dumps(payload, ensure_ascii=True)}",
+        )
+
+    def summarize_portfolio_recommendation_data(
+        self, payload: dict[str, Any]
+    ) -> dict[str, Any] | None:
+        """Argumentaire du recommandateur, separe des syntheses d'analyse."""
+        if not self.is_enabled():
+            return None
+        return self._complete_json(
+            self._portfolio_recommendation_system_prompt(),
+            f"RECOMMANDATION_CALCULEE:\n{json.dumps(payload, ensure_ascii=True)}",
         )
 
     def analyze_news(self, payload: dict[str, Any]) -> dict[str, Any] | None:
@@ -143,13 +196,9 @@ class NebiusClient:
             raise RuntimeError("NEBIUS_API_KEY manquante pour les embeddings.")
 
         embedding_model = model or resolve_embedding_model()
-        response = requests.post(
-            f"{self.base_url}/embeddings",
-            headers={
-                "Authorization": f"Bearer {self.api_key}",
-                "Content-Type": "application/json",
-            },
-            json={"model": embedding_model, "input": texts},
+        response = self._post(
+            "embeddings",
+            {"model": embedding_model, "input": texts},
             timeout=90,
         )
         response.raise_for_status()
@@ -315,10 +364,9 @@ class NebiusClient:
         )
         user = f"QUESTION:\n{question}\n\nPASSAGES:\n{context}"
         try:
-            response = requests.post(
-                f"{self.base_url}/chat/completions",
-                headers={"Authorization": f"Bearer {self.api_key}", "Content-Type": "application/json"},
-                json={
+            response = self._post(
+                "chat/completions",
+                {
                     "model": self.model,
                     "temperature": 0.1,
                     "max_tokens": 800,
@@ -340,13 +388,9 @@ class NebiusClient:
             return None
 
     def _chat_json(self, system_prompt: str, user_prompt: str) -> dict[str, Any] | None:
-        response = requests.post(
-            f"{self.base_url}/chat/completions",
-            headers={
-                "Authorization": f"Bearer {self.api_key}",
-                "Content-Type": "application/json",
-            },
-            json={
+        response = self._post(
+            "chat/completions",
+            {
                 "model": self.model,
                 "temperature": 0.1,
                 "response_format": {"type": "json_object"},
@@ -468,6 +512,42 @@ class NebiusClient:
             '  "data_quality": "excellent | bon | partiel | faible",\n'
             '  "key_points": ["argument qualitatif specifique 1", "argument 2", "argument 3"],\n'
             '  "warnings": ["limite de donnees importante"]\n'
+            "}"
+        )
+
+    def _portfolio_synthesis_system_prompt(self) -> str:
+        return (
+            "Tu es le SLM du PortfolioSynthesisAgent. Tu es strictement independant du SynthesisAgent mono-action.\n"
+            "Les scores, le verdict, les decisions par position et les poids cibles sont deja calcules par du code : "
+            "tu ne les modifies jamais et tu ne recalcules rien.\n"
+            "Tu expliques uniquement si les actions forment ensemble une combinaison coherente, en reliant qualite individuelle, "
+            "diversification, correlation, concentration, performance ajustee du risque et qualite des donnees.\n"
+            "N'invente aucune entreprise, aucune source et aucun fait. N'utilise jamais les mots 'acheter' ou 'vendre'.\n"
+            "La note ne contient AUCUN chiffre, score, pourcentage, prix ou poids. Les valeurs calculees sont affichees ailleurs.\n"
+            "Reponds uniquement en JSON valide avec exactement ces champs:\n"
+            "{\n"
+            '  "summary": "note qualitative specifique au portefeuille en cinq a huit phrases",\n'
+            '  "data_quality": "excellent | bon | partiel | faible",\n'
+            '  "key_points": ["argument portefeuille un", "argument deux", "argument trois"],\n'
+            '  "warnings": ["limite de donnees importante"]\n'
+            "}"
+        )
+
+    def _portfolio_recommendation_system_prompt(self) -> str:
+        return (
+            "Tu es le SLM du PortfolioRecommendationAgent. Tu es independant des SLM d'analyse d'une action et d'un portefeuille existant.\n"
+            "La liste des entreprises, les poids, les quantites, les scores et le verdict ont deja ete calcules par du code. "
+            "Tu ne modifies aucun de ces elements et tu ne proposes aucune entreprise absente des allocations.\n"
+            "Explique en francais pourquoi la combinaison correspond au profil, quel role joue chaque type d'entreprise, "
+            "comment la diversification agit et quels risques peuvent invalider la these.\n"
+            "N'utilise jamais les mots 'acheter' ou 'vendre'. Presente le resultat comme une simulation analytique, pas comme une promesse.\n"
+            "La note ne contient AUCUN chiffre, score, pourcentage, prix ou poids : les donnees calculees sont affichees separement.\n"
+            "Reponds uniquement en JSON valide avec exactement ces champs:\n"
+            "{\n"
+            '  "summary": "argumentaire detaille et specifique au profil et aux entreprises retenues",\n'
+            '  "data_quality": "excellent | bon | partiel | faible",\n'
+            '  "key_points": ["raison de la composition", "complementarite", "condition de suivi"],\n'
+            '  "warnings": ["risque ou limite importante"]\n'
             "}"
         )
 

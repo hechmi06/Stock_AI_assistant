@@ -36,6 +36,22 @@ class NumericSlm:
         }
 
 
+class CountingSlm:
+    def __init__(self):
+        self.calls = 0
+
+    def summarize_synthesis_data(self, payload):
+        self.calls += 1
+        return {
+            "provider": "test",
+            "model": "stock-only",
+            "summary": "Le dossier individuel conserve une dynamique favorable et des fondamentaux solides.",
+            "data_quality": "bon",
+            "key_points": ["Dynamique favorable", "Risques contenus"],
+            "warnings": [],
+        }
+
+
 def isolated_agent(tmp_dir: str) -> SynthesisAgent:
     """SynthesisAgent avec memoire sur base temporaire (pas d'ecriture dans data/)."""
     memory = SynthesisAgentMemory(Path(tmp_dir) / "test_agent_memory.db")
@@ -223,7 +239,11 @@ class SynthesisAgentTests(unittest.TestCase):
 
 
 class FakeMarketAgent:
+    def __init__(self):
+        self.calls = 0
+
     def run(self, ticker, **kwargs):
+        self.calls += 1
         return sample_inputs()[0]
 
 
@@ -271,6 +291,48 @@ class OrchestratorTests(unittest.TestCase):
                 "SynthesisAgent",
             },
         )
+
+    def test_prefetched_market_data_skips_collection(self):
+        """Fix 3 : un MarketDataResult fourni evite une 2e collecte marche."""
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp_dir:
+            market_agent = FakeMarketAgent()
+            orchestrator = StockAnalysisOrchestrator(
+                market_data_agent=market_agent,
+                technical_agent=FakeTechnicalAgent(),
+                news_agent=FakeNewsAgent(),
+                risk_agent=FakeRiskAgent(),
+                synthesis_agent=isolated_agent(tmp_dir),
+            )
+            prefetched = sample_inputs()[0]  # ticker MSFT
+
+            result = orchestrator.run("MSFT", market_data=prefetched)
+
+        self.assertEqual(market_agent.calls, 0)
+        self.assertEqual(result.market_data.ticker, "MSFT")
+        self.assertEqual(result.synthesis.global_score, 84)
+
+    def test_portfolio_context_can_disable_only_the_stock_narration(self):
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp_dir:
+            slm = CountingSlm()
+            synthesis_agent = SynthesisAgent(
+                slm_client=slm,
+                memory=SynthesisAgentMemory(Path(tmp_dir) / "stock_slm_isolation.db"),
+            )
+            orchestrator = StockAnalysisOrchestrator(
+                market_data_agent=FakeMarketAgent(),
+                technical_agent=FakeTechnicalAgent(),
+                news_agent=FakeNewsAgent(),
+                risk_agent=FakeRiskAgent(),
+                synthesis_agent=synthesis_agent,
+            )
+
+            portfolio_result = orchestrator.run("MSFT", with_synthesis_slm=False)
+            self.assertIsNone(portfolio_result.synthesis.slm_summary)
+            self.assertEqual(slm.calls, 0)
+
+            stock_result = orchestrator.run("MSFT")
+            self.assertIsNotNone(stock_result.synthesis.slm_summary)
+            self.assertEqual(slm.calls, 1)
 
 
 if __name__ == "__main__":

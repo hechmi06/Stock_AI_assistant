@@ -31,6 +31,8 @@ from .agents.schemas import (
 class AnalysisState(TypedDict, total=False):
     ticker: str
     use_cache: bool
+    with_synthesis_slm: bool
+    prefetched_market_data: MarketDataResult
     market_data: MarketDataResult
     technical: TechnicalResult
     news: NewsResult
@@ -80,15 +82,25 @@ class StockAnalysisOrchestrator:
         graph.add_edge("synthesis", END)
         return graph.compile()
 
-    def run(self, ticker: str, use_cache: bool = True) -> OrchestratedAnalysis:
+    def run(
+        self,
+        ticker: str,
+        use_cache: bool = True,
+        with_synthesis_slm: bool = True,
+        market_data: MarketDataResult | None = None,
+    ) -> OrchestratedAnalysis:
         symbol = ticker.strip().upper()
-        state = self.graph.invoke(
-            {
-                "ticker": symbol,
-                "use_cache": use_cache,
-                "execution_trace": [],
-            }
-        )
+        initial: AnalysisState = {
+            "ticker": symbol,
+            "use_cache": use_cache,
+            "with_synthesis_slm": with_synthesis_slm,
+            "execution_trace": [],
+        }
+        # market_data deja collecte en amont (workflow portefeuille) : evite une
+        # seconde collecte identique dans le noeud market_data.
+        if market_data is not None and market_data.ticker == symbol:
+            initial["prefetched_market_data"] = market_data
+        state = self.graph.invoke(initial)
         synthesis = state["synthesis"]
         return OrchestratedAnalysis(
             ticker=symbol,
@@ -120,6 +132,9 @@ class StockAnalysisOrchestrator:
 
     def _market_data_node(self, state: AnalysisState) -> dict:
         started = perf_counter()
+        prefetched = state.get("prefetched_market_data")
+        if prefetched is not None:
+            return self._node_result("MarketDataAgent", "market_data", prefetched, started)
         result = self.market_data_agent.run(
             state["ticker"],
             use_cache=state.get("use_cache", True),
@@ -168,6 +183,7 @@ class StockAnalysisOrchestrator:
             state["news"],
             state["rag"],
             state["risk"],
+            with_slm=state.get("with_synthesis_slm", True),
         )
         return self._node_result("SynthesisAgent", "synthesis", result, started)
 
