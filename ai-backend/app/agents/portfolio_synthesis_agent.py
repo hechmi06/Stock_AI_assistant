@@ -70,11 +70,36 @@ class PortfolioSynthesisAgent:
                 for key, weight in PORTFOLIO_SCORE_WEIGHTS.items()
             )
         )
-        confidence_score = scores.data_quality
-        confidence_level = (
-            "high" if confidence_score >= 80 else "medium" if confidence_score >= 50 else "low"
+        data_confidence_score = scores.data_quality
+        model_confidence_score = self._model_confidence_score(
+            portfolio, analyzed, requested
         )
-        verdict = self._verdict(global_score, confidence_score, portfolio)
+        decision_confidence_score = self._decision_confidence_score(
+            data_confidence_score,
+            model_confidence_score,
+            global_score,
+            portfolio,
+            usable,
+        )
+        confidence_score = decision_confidence_score
+        confidence_level = (
+            "high" if confidence_score >= 80 else "medium" if confidence_score >= 55 else "low"
+        )
+        complete_coverage = (
+            portfolio.status == "success"
+            and analyzed == requested
+            and all(item.status == "success" for item in individual_analyses)
+        )
+        has_high_risk = any(item.risk_level == "high" for item in usable)
+        verdict = self._verdict(
+            global_score,
+            confidence_score,
+            data_confidence_score,
+            model_confidence_score,
+            portfolio,
+            complete_coverage,
+            has_high_risk,
+        )
         target_weights, reserve_weight, diversify_weight = self._target_weights(
             portfolio, analyses, verdict, confidence_score
         )
@@ -96,12 +121,16 @@ class PortfolioSynthesisAgent:
             ),
             "Les poids cibles sont une simulation heuristique, pas une optimisation ni un conseil financier.",
             "Les contraintes appliquees sont 30% maximum par ligne et 40% maximum par secteur.",
+            "La confiance de decision combine qualite des donnees, support statistique et stabilite du verdict.",
         ]))
 
         result = PortfolioSynthesisResult(
             status=status,
             verdict=verdict,
             global_score=global_score,
+            data_confidence_score=data_confidence_score,
+            model_confidence_score=model_confidence_score,
+            decision_confidence_score=decision_confidence_score,
             confidence_score=confidence_score,
             confidence_level=confidence_level,
             scores=scores,
@@ -182,6 +211,63 @@ class PortfolioSynthesisAgent:
             + coverage * 100 * 0.20
         )
         return self._clamp(round(combined))
+
+    def _model_confidence_score(
+        self,
+        portfolio: PortfolioAnalysisResult,
+        analyzed: int,
+        requested: int,
+    ) -> int:
+        """Solidite des calculs, distincte de la disponibilite des sources."""
+        performance = portfolio.performance
+        observation_support = min(
+            100,
+            round(max(0, performance.observation_count) / 252 * 100),
+        )
+        metrics = [
+            performance.sharpe_ratio,
+            performance.max_drawdown_percent,
+            performance.average_correlation,
+            performance.beta,
+            performance.jensen_alpha_percent,
+        ]
+        metric_coverage = round(
+            sum(value is not None for value in metrics) / len(metrics) * 100
+        )
+        analysis_coverage = round(analyzed / requested * 100) if requested else 0
+        technical_support = (
+            100 if portfolio.technical_summary.weighted_score is not None else 0
+        )
+        combined = (
+            observation_support * 0.45
+            + metric_coverage * 0.30
+            + analysis_coverage * 0.15
+            + technical_support * 0.10
+        )
+        return self._clamp(round(combined))
+
+    def _decision_confidence_score(
+        self,
+        data_confidence: int,
+        model_confidence: int,
+        global_score: int,
+        portfolio: PortfolioAnalysisResult,
+        analyses: list[PortfolioHoldingAnalysis],
+    ) -> int:
+        """Confiance finale, penalisee si la decision est proche d'un seuil."""
+        score = round(data_confidence * 0.55 + model_confidence * 0.45)
+        distance = min(abs(global_score - threshold) for threshold in (48, 62, 75))
+        if distance <= 2:
+            score -= 10
+        elif distance <= 5:
+            score -= 5
+        if portfolio.risk.concentration_level == "high":
+            score -= 5
+        if any(item.risk_level == "high" for item in analyses):
+            score -= 10
+        if portfolio.status != "success":
+            score -= 10
+        return self._clamp(score)
 
     def _target_weights(
         self,
@@ -408,11 +494,23 @@ class PortfolioSynthesisAgent:
     def _verdict(
         score: int,
         confidence: int,
+        data_confidence: int,
+        model_confidence: int,
         portfolio: PortfolioAnalysisResult,
+        complete_coverage: bool,
+        has_high_risk: bool,
     ) -> PortfolioVerdict:
-        if confidence < 40:
+        if confidence < 50:
             return "donnees_insuffisantes"
-        if score >= 75:
+        if (
+            score >= 75
+            and confidence >= 80
+            and data_confidence >= 80
+            and model_confidence >= 70
+            and complete_coverage
+            and not has_high_risk
+            and portfolio.risk.concentration_level != "high"
+        ):
             verdict: PortfolioVerdict = "robuste"
         elif score >= 62:
             verdict = "coherent"

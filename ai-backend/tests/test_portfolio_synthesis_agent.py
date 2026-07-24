@@ -116,6 +116,44 @@ def sample_individual_analyses():
     ]
 
 
+def robust_portfolio():
+    portfolio = sample_portfolio()
+    portfolio.positions[1].sector = "Healthcare"
+    portfolio.allocation_by_sector = [
+        PortfolioAllocation(label="Technology", value=1200, weight=60),
+        PortfolioAllocation(label="Healthcare", value=600, weight=30),
+        PortfolioAllocation(label="Cash", value=200, weight=10),
+    ]
+    portfolio.risk.concentration_score = 20
+    portfolio.risk.concentration_level = "low"
+    portfolio.risk.diversification_score = 85
+    portfolio.risk.diversification_level = "high"
+    portfolio.risk.data_confidence_score = 100
+    portfolio.risk.data_confidence_level = "high"
+    portfolio.performance.observation_count = 252
+    portfolio.performance.sharpe_ratio = 1.8
+    portfolio.performance.jensen_alpha_percent = 6
+    portfolio.performance.max_drawdown_percent = -8
+    portfolio.performance.average_correlation = 0.15
+    portfolio.performance.beta = 1.0
+    portfolio.technical_summary.weighted_score = 85
+    return portfolio
+
+
+def robust_individual_analyses():
+    analyses = sample_individual_analyses()
+    for analysis in analyses:
+        analysis.global_score = 90
+        analysis.recommendation = "favorable"
+        analysis.confidence_score = 95
+        analysis.risk_score = 20
+        analysis.risk_level = "low"
+        analysis.technical_score = 85
+        analysis.fundamental_score = 90
+        analysis.news_score = 75
+    return analyses
+
+
 class PortfolioSynthesisAgentTests(unittest.TestCase):
     def test_verdict_and_rebalancing_are_deterministic(self):
         agent = PortfolioSynthesisAgent(slm_client=FakePortfolioSlm())
@@ -145,6 +183,89 @@ class PortfolioSynthesisAgentTests(unittest.TestCase):
         self.assertEqual(result.verdict, "a_reequilibrer")
         self.assertIsNotNone(result.slm_summary)
         self.assertIn("concentration sectorielle", result.summary)
+
+    def test_robust_verdict_requires_high_decision_confidence(self):
+        agent = PortfolioSynthesisAgent(slm_client=FakePortfolioSlm())
+        portfolio = robust_portfolio()
+        analyses = robust_individual_analyses()
+        robust = agent.run(portfolio, analyses, with_slm=False)
+
+        degraded_portfolio = portfolio.model_copy(deep=True)
+        degraded_portfolio.risk.data_confidence_score = 50
+        degraded_analyses = [item.model_copy(deep=True) for item in analyses]
+        for analysis in degraded_analyses:
+            analysis.confidence_score = 50
+        degraded = agent.run(
+            degraded_portfolio,
+            degraded_analyses,
+            with_slm=False,
+        )
+
+        self.assertEqual(robust.verdict, "robuste")
+        self.assertGreaterEqual(robust.decision_confidence_score, 80)
+        self.assertEqual(robust.confidence_score, robust.decision_confidence_score)
+        self.assertNotEqual(degraded.verdict, "robuste")
+        self.assertLess(
+            degraded.decision_confidence_score,
+            robust.decision_confidence_score,
+        )
+
+    def test_model_confidence_decreases_with_shorter_history(self):
+        agent = PortfolioSynthesisAgent(slm_client=FakePortfolioSlm())
+        long_history = agent.run(
+            robust_portfolio(),
+            robust_individual_analyses(),
+            with_slm=False,
+        )
+        short_portfolio = robust_portfolio()
+        short_portfolio.performance.observation_count = 20
+        short_history = agent.run(
+            short_portfolio,
+            robust_individual_analyses(),
+            with_slm=False,
+        )
+
+        self.assertLess(
+            short_history.model_confidence_score,
+            long_history.model_confidence_score,
+        )
+        self.assertLess(
+            short_history.decision_confidence_score,
+            long_history.decision_confidence_score,
+        )
+        self.assertNotEqual(short_history.verdict, "robuste")
+
+    def test_high_risk_position_prevents_robust_verdict(self):
+        agent = PortfolioSynthesisAgent(slm_client=FakePortfolioSlm())
+        analyses = robust_individual_analyses()
+        analyses[0].risk_level = "high"
+        analyses[0].risk_score = 75
+        result = agent.run(
+            robust_portfolio(),
+            analyses,
+            with_slm=False,
+        )
+
+        self.assertNotEqual(result.verdict, "robuste")
+
+    def test_worse_risk_metrics_cannot_improve_global_score(self):
+        agent = PortfolioSynthesisAgent(slm_client=FakePortfolioSlm())
+        healthy = agent.run(
+            robust_portfolio(),
+            robust_individual_analyses(),
+            with_slm=False,
+        )
+        stressed_portfolio = robust_portfolio()
+        stressed_portfolio.performance.sharpe_ratio = -0.5
+        stressed_portfolio.performance.jensen_alpha_percent = -12
+        stressed_portfolio.performance.max_drawdown_percent = -40
+        stressed = agent.run(
+            stressed_portfolio,
+            robust_individual_analyses(),
+            with_slm=False,
+        )
+
+        self.assertLess(stressed.global_score, healthy.global_score)
 
 
 if __name__ == "__main__":

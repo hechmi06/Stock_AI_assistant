@@ -264,10 +264,15 @@ export function PortfolioDashboard({ onOpenAnalysis }: { onOpenAnalysis: (ticker
               <div className="portfolio-verdict-score">
                 <span>{verdictLabel(completeAnalysis.synthesis.verdict)}</span>
                 <strong>{completeAnalysis.synthesis.global_score}/100</strong>
-                <small>Confiance {completeAnalysis.synthesis.confidence_score}/100</small>
+                <small>Score global d'analyse</small>
               </div>
               <div>
                 <p>{completeAnalysis.synthesis.summary}</p>
+                <div className="portfolio-confidence-breakdown">
+                  <span>Donnees <strong>{completeAnalysis.synthesis.data_confidence_score ?? completeAnalysis.synthesis.confidence_score}/100</strong></span>
+                  <span>Modele <strong>{completeAnalysis.synthesis.model_confidence_score ?? completeAnalysis.synthesis.confidence_score}/100</strong></span>
+                  <span>Decision <strong>{completeAnalysis.synthesis.decision_confidence_score ?? completeAnalysis.synthesis.confidence_score}/100</strong></span>
+                </div>
                 <small>
                   {completeAnalysis.synthesis.analyzed_positions}/{completeAnalysis.synthesis.requested_positions} actions analysees · recommandation simulee
                 </small>

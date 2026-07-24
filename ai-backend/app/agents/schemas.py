@@ -477,6 +477,10 @@ class PortfolioSynthesisResult(BaseModel):
     status: MarketDataStatus
     verdict: PortfolioVerdict = "donnees_insuffisantes"
     global_score: int = Field(default=0, ge=0, le=100)
+    data_confidence_score: int = Field(default=0, ge=0, le=100)
+    model_confidence_score: int = Field(default=0, ge=0, le=100)
+    decision_confidence_score: int = Field(default=0, ge=0, le=100)
+    # Alias retrocompatible : represente desormais la confiance de decision.
     confidence_score: int = Field(default=0, ge=0, le=100)
     confidence_level: RiskLevel = "low"
     scores: PortfolioSynthesisScores = Field(default_factory=PortfolioSynthesisScores)
@@ -542,6 +546,7 @@ class RecommendationCandidateScore(BaseModel):
     sector: str = "Unknown"
     status: MarketDataStatus = "failed"
     total_score: int = Field(default=0, ge=0, le=100)
+    potential_score: int = Field(default=0, ge=0, le=100)
     fundamental_score: int = Field(default=0, ge=0, le=100)
     technical_score: int = Field(default=0, ge=0, le=100)
     stability_score: int = Field(default=0, ge=0, le=100)
@@ -552,8 +557,21 @@ class RecommendationCandidateScore(BaseModel):
     potential_label: str | None = None
     current_price: float | None = None
     volatility: float | None = None
+    quality_gate_passed: bool = False
+    quality_issues: list[str] = Field(default_factory=list)
     reasons: list[str] = Field(default_factory=list)
     rejection_reason: str | None = None
+
+
+class RecommendationValidationRecord(BaseModel):
+    round: int = Field(ge=1)
+    ticker: str
+    decision: Literal["accepted", "rejected"]
+    recommendation: SynthesisRecommendation
+    global_score: int = Field(default=0, ge=0, le=100)
+    confidence_score: int = Field(default=0, ge=0, le=100)
+    risk_level: RiskLevel = "high"
+    reasons: list[str] = Field(default_factory=list)
 
 
 class RecommendedAllocation(BaseModel):
@@ -574,6 +592,7 @@ class PortfolioRecommendationResult(BaseModel):
     status: MarketDataStatus
     generated_at: datetime
     workflow: str = "portfolio_recommendation"
+    methodology_version: str = "2.0"
     profile: PortfolioRecommendationRequest
     universe: list[str] = Field(default_factory=list)
     candidates: list[RecommendationCandidateScore] = Field(default_factory=list)
@@ -584,6 +603,8 @@ class PortfolioRecommendationResult(BaseModel):
     selection_method: list[str] = Field(default_factory=list)
     strengths: list[str] = Field(default_factory=list)
     risks: list[str] = Field(default_factory=list)
+    validation_rounds: int = Field(default=0, ge=0)
+    validation_records: list[RecommendationValidationRecord] = Field(default_factory=list)
     portfolio_analysis: PortfolioCompleteAnalysisResult | None = None
     warnings: list[str] = Field(default_factory=list)
     errors: list[str] = Field(default_factory=list)

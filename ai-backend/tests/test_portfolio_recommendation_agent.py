@@ -10,6 +10,7 @@ from app.agents.schemas import (
     PortfolioAllocation,
     PortfolioAnalysisResult,
     PortfolioCompleteAnalysisResult,
+    PortfolioHoldingAnalysis,
     PortfolioPositionResult,
     PortfolioRecommendationRequest,
     PortfolioRiskSummary,
@@ -62,7 +63,7 @@ class FakeMarketAgent:
                 date=(start + timedelta(days=day)).date().isoformat(),
                 close=100 + index + day * (0.15 + index / 500),
             )
-            for day in range(40)
+            for day in range(130)
         ]
         return MarketDataResult(
             ticker=ticker,
@@ -71,18 +72,27 @@ class FakeMarketAgent:
             change_percent=(index % 5) - 1,
             historical_prices=history,
             company_profile=CompanyProfile(
-                name=f"{ticker} Corp.", sector=SECTORS[ticker], currency="USD"
+                name=f"{ticker} Corp.",
+                sector=SECTORS[ticker],
+                currency="USD",
+                exchange="NASDAQ",
             ),
             financial_ratios={
                 "profit_margin": 0.18 + (index % 4) * 0.02,
                 "return_on_equity": 0.20,
                 "debt_to_equity": 0.8,
+                "forward_pe": 22,
+                "earnings_growth": 0.12,
+                "revenue_growth": 0.09,
             },
             financial_statements_summary=FinancialStatementsSummary(
+                total_revenue=100_000_000,
                 net_income=10_000_000,
+                total_assets=180_000_000,
+                total_debt=35_000_000,
                 operating_cashflow=12_000_000,
             ),
-            sources_used=["twelve_data"],
+            sources_used=["twelve_data", "yfinance"],
         )
 
 
@@ -101,7 +111,15 @@ class FakeTechnicalAgent:
 
 
 class FakePortfolioOrchestrator:
+    def __init__(self, reject_first_selected=False):
+        self.reject_first_selected = reject_first_selected
+        self.calls = 0
+        self.rejected_ticker = None
+
     def run(self, request, use_cache=True, with_portfolio_slm=False):
+        self.calls += 1
+        if self.reject_first_selected and self.calls == 1:
+            self.rejected_ticker = request.holdings[0].ticker
         total = request.cash + sum(
             item.quantity * item.average_cost for item in request.holdings
         )
@@ -154,6 +172,29 @@ class FakePortfolioOrchestrator:
             status="success",
             generated_at=datetime.now(timezone.utc),
             portfolio=portfolio,
+            individual_analyses=[
+                PortfolioHoldingAnalysis(
+                    ticker=item.ticker,
+                    status="success",
+                    global_score=35 if item.ticker == self.rejected_ticker and self.calls == 1 else 74,
+                    recommendation=(
+                        "defavorable"
+                        if item.ticker == self.rejected_ticker and self.calls == 1
+                        else "a_surveiller"
+                    ),
+                    confidence_score=90,
+                    risk_score=75 if item.ticker == self.rejected_ticker and self.calls == 1 else 25,
+                    risk_level=(
+                        "high"
+                        if item.ticker == self.rejected_ticker and self.calls == 1
+                        else "low"
+                    ),
+                    technical_score=70,
+                    fundamental_score=72,
+                    news_score=55,
+                )
+                for item in request.holdings
+            ],
             synthesis=synthesis,
         )
 
@@ -233,6 +274,76 @@ class PortfolioRecommendationAgentTests(unittest.TestCase):
         self.assertIsNotNone(result.slm_summary)
         self.assertIn("moteurs de croissance", result.summary)
         self.assertEqual(len(result.allocations), 5)
+
+    def test_horizon_changes_the_candidate_scoring_policy(self):
+        instrument = UniverseInstrument(ticker="JPM", sector=SECTORS["JPM"])
+        market = FakeMarketAgent().run("JPM")
+        short = self.agent._evaluate_candidate(
+            instrument,
+            market,
+            PortfolioRecommendationRequest(
+                budget=10_000,
+                horizon_years=2,
+                objective="growth",
+            ),
+        )
+        long = self.agent._evaluate_candidate(
+            instrument,
+            market,
+            PortfolioRecommendationRequest(
+                budget=10_000,
+                horizon_years=12,
+                objective="growth",
+            ),
+        )
+
+        self.assertNotEqual(short.total_score, long.total_score)
+
+    def test_quality_gate_blocks_incomplete_market_data(self):
+        market = FakeMarketAgent().run("AAPL")
+        market.status = "partial"
+        market.sources_used = []
+        market.financial_ratios = {}
+        market.financial_statements_summary = FinancialStatementsSummary()
+        market.company_profile = CompanyProfile(name="Apple")
+        candidate = self.agent._evaluate_candidate(
+            UniverseInstrument(ticker="AAPL", sector="Technology"),
+            market,
+            PortfolioRecommendationRequest(budget=10_000),
+        )
+
+        self.assertFalse(candidate.quality_gate_passed)
+        self.assertIsNotNone(candidate.rejection_reason)
+        self.assertIn("Quality gate", candidate.rejection_reason)
+
+    def test_multi_agent_rejection_replaces_the_position_and_revalidates(self):
+        orchestrator = FakePortfolioOrchestrator(reject_first_selected=True)
+        agent = PortfolioRecommendationAgent(
+            market_data_agent=FakeMarketAgent(),
+            technical_agent=FakeTechnicalAgent(),
+            portfolio_orchestrator=orchestrator,
+            slm_client=self.slm,
+            universe_provider=FakeUniverseProvider(),
+        )
+
+        result = agent.run(
+            PortfolioRecommendationRequest(budget=20_000, max_positions=5),
+            with_slm=False,
+        )
+
+        self.assertEqual(result.status, "success")
+        self.assertEqual(result.validation_rounds, 2)
+        self.assertNotIn(
+            orchestrator.rejected_ticker,
+            {item.ticker for item in result.allocations},
+        )
+        rejected_records = [
+            item
+            for item in result.validation_records
+            if item.decision == "rejected"
+        ]
+        self.assertEqual(rejected_records[0].ticker, orchestrator.rejected_ticker)
+        self.assertGreaterEqual(orchestrator.calls, 2)
 
 
 if __name__ == "__main__":

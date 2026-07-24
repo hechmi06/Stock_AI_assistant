@@ -46,7 +46,7 @@ Gateway Swagger  http://localhost:3000/api/docs
 Backend Swagger  http://localhost:8000/docs
 ```
 
-Le dernier travail effectue concerne le MVP `PortfolioAgent` :
+Le module `PortfolioAgent` actuellement disponible couvre :
 
 - saisie de positions actions long-only (`ticker`, quantite, prix moyen) et liquidites USD ;
 - valorisation par le `MarketDataAgent`, sans nouvel appel direct aux fournisseurs ;
@@ -70,8 +70,8 @@ Le dernier travail effectue concerne le MVP `PortfolioAgent` :
 - le SLM portefeuille ne modifie jamais les scores, le verdict ou les poids,
   tous calcules par des regles deterministes.
 
-Limites volontaires du MVP : les performances sont calculees sur les prix (hors
-dividendes et frais) avec des ponderations statiques. Pas encore de vente a
+Limites actuelles avant qualification production : les performances sont calculees
+sur les prix (hors dividendes et frais) avec des ponderations statiques. Pas encore de vente a
 decouvert, options, conversion multi-devises, transactions historiques ni
 optimisation mathematique de portefeuille. Le reequilibrage actuel est une
 simulation heuristique avec plafond de 30% par ligne et 40% par secteur. EMA,
@@ -97,15 +97,77 @@ Le `PortfolioRecommendationAgent` constitue un troisieme workflow independant :
 
 - entrees utilisateur : budget, profil de risque, objectif, horizon, nombre de
   positions, reserve de liquidites, benchmark et exclusions ;
-- screening de quinze grandes capitalisations americaines sur les fondamentaux,
+- screening d'un univers configurable de grandes capitalisations americaines sur les fondamentaux,
   la technique, la stabilite, le momentum et la qualite des donnees ;
 - selection sectorielle diversifiee et allocation plafonnee par ligne/secteur ;
-- validation des finalistes par le workflow multi-agents complet ;
+- quality gate bloquant sur le prix, l'historique, le profil, les ratios, les
+  etats financiers, les sources et l'analyse technique ;
+- horizon reellement integre dans les poids du potentiel et du score de selection ;
+- validation en boucle des finalistes par le workflow multi-agents complet :
+  une position rejetee par les seuils de score, de confiance ou de risque est
+  exclue, remplacee, reallouee puis le portefeuille est analyse de nouveau ;
+- refus explicite de produire une allocation lorsque trois positions ne peuvent
+  pas etre validees ou lorsque la composition ne se stabilise pas ;
+- journal d'audit `validation_records` indiquant chaque acceptation/rejet et ses
+  motifs, expose dans FastAPI, Swagger et l'interface ;
 - argumentaire detaille produit par un SLM dedie, sans pouvoir changer les
   entreprises, les scores ou les poids calcules ;
 - endpoint FastAPI `POST /agents/portfolio/recommend` et endpoint gateway
   `POST /api/portfolio/recommend` ;
 - vue frontend separee **Recommandation**.
+
+### Recommendation Engine V2
+
+Version de methodologie actuelle : `2.0`.
+
+Le moteur distingue quatre niveaux qui ne doivent pas etre confondus :
+
+1. donnees observees et sourcees ;
+2. scores deterministes calcules ;
+3. validation multi-agents sous contraintes ;
+4. narration SLM, limitee a l'explication.
+
+Le nombre affiche avec le verdict est un **score global d'analyse**, pas une
+probabilite de gain :
+
+```txt
+qualite individuelle 35% + diversification 20%
++ performance ajustee du risque 20% + technique 10%
++ qualite des donnees 15%
+```
+
+La confiance est separee en trois mesures :
+
+- `data_confidence_score` : disponibilite, completude et couverture des sources ;
+- `model_confidence_score` : longueur de l'historique, couverture des metriques,
+  couverture des positions et disponibilite de l'agregation technique ;
+- `decision_confidence_score` : combinaison 55% donnees / 45% modele, penalisee
+  lorsque le score est proche d'un seuil, que le portefeuille est concentre ou
+  qu'une position presente un risque eleve.
+
+`confidence_score` est conserve pour compatibilite et prend exactement la valeur
+de `decision_confidence_score`. Le verdict `robuste` exige simultanement :
+
+- score global d'analyse >= 75/100 ;
+- confiance de decision >= 80/100 ;
+- confiance des donnees >= 80/100 et confiance du modele >= 70/100 ;
+- couverture complete et analyses individuelles toutes en succes ;
+- aucune position a risque eleve ;
+- aucune concentration elevee.
+
+Les seuils V2 sont des politiques explicites et testees, mais leur calibration
+financiere doit encore etre validee par un protocole walk-forward hors
+echantillon. Avant de qualifier le moteur pour un usage reel, il reste a ajouter :
+
+- rendements totaux avec dividendes, frais, fiscalite et conversion de devises ;
+- covariance robuste, contribution au risque, VaR/CVaR et stress tests ;
+- optimisation Black-Litterman, minimum variance, risk parity ou CVaR selon le
+  profil ;
+- comparaison hors echantillon au benchmark, turnover et calendrier de
+  reequilibrage ;
+- controle du look-ahead bias et du survivorship bias ;
+- profil investisseur complet : situation financiere, portefeuille existant,
+  perte maximale acceptable, liquidite, experience et contraintes personnelles.
 
 ## Objectif du projet
 

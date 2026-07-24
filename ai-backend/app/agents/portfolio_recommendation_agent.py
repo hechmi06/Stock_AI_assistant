@@ -14,9 +14,11 @@ from .nebius_client import NebiusClient
 from .schemas import (
     MarketDataResult,
     PortfolioAnalysisRequest,
+    PortfolioCompleteAnalysisResult,
     PortfolioHoldingInput,
     PortfolioRecommendationRequest,
     PortfolioRecommendationResult,
+    RecommendationValidationRecord,
     RecommendationCandidateScore,
     RecommendedAllocation,
     SlmSummary,
@@ -28,11 +30,29 @@ from .universe_provider import UniverseProvider
 
 
 # Seuils de screening nommes (evite les nombres magiques disperses dans le code).
-MIN_SCREENING_SCORE = 42          # score total minimal pour ne pas etre ecarte
+MIN_SCREENING_SCORE = 50          # score total minimal pour ne pas etre ecarte
 CONSERVATIVE_MIN_STABILITY = 35   # stabilite minimale exigee d'un profil prudent
-MIN_HISTORY_POINTS = 20           # points d'historique minimaux pour comparer le risque
+MIN_HISTORY_POINTS = 60           # points d'historique minimaux pour comparer le risque
 VOLATILITY_STABILITY_FACTOR = 13  # conversion volatilite -> penalite de stabilite
 MIN_PORTFOLIO_POSITIONS = 3       # taille minimale d'un portefeuille exploitable
+MAX_VALIDATION_ROUNDS = 3
+METHODOLOGY_VERSION = "2.0"
+
+QUALITY_GATE_THRESHOLDS = {
+    "conservative": 75,
+    "moderate": 65,
+    "dynamic": 60,
+}
+VALIDATION_MIN_CONFIDENCE = {
+    "conservative": 70,
+    "moderate": 60,
+    "dynamic": 55,
+}
+VALIDATION_MIN_GLOBAL_SCORE = {
+    "conservative": 60,
+    "moderate": 55,
+    "dynamic": 50,
+}
 # Plafond de titres reellement collectes/analyses par requete. Borne le temps de
 # reponse (chaque titre = une collecte marche multi-sources) tout en gardant un
 # univers large : au-dela, on echantillonne de facon equilibree par secteur.
@@ -91,44 +111,77 @@ class PortfolioRecommendationAgent:
         ]
         self._assign_potential_labels(candidates)
         selected = self._select_candidates(candidates, request.max_positions)
-        allocations, cash_amount, cash_weight = self._allocate(
-            selected, request
-        )
+        allocations: list[RecommendedAllocation] = []
+        cash_amount = request.budget
+        cash_weight = 100.0
+        complete_analysis = None
+        validation_records: list[RecommendationValidationRecord] = []
+        validation_rounds = 0
+        validation_stable = False
 
-        if len(allocations) < MIN_PORTFOLIO_POSITIONS:
-            return PortfolioRecommendationResult(
-                status="failed",
-                generated_at=datetime.now(timezone.utc),
-                profile=request,
+        # La selection n'est plus consideree comme definitive avant validation.
+        # Un rejet multi-agents exclut le titre, declenche une nouvelle selection,
+        # une nouvelle allocation et une nouvelle analyse du portefeuille complet.
+        for validation_round in range(1, MAX_VALIDATION_ROUNDS + 1):
+            allocations, cash_amount, cash_weight = self._allocate(selected, request)
+            if len(allocations) < MIN_PORTFOLIO_POSITIONS:
+                return self._failed_recommendation(
+                    request=request,
+                    universe=universe,
+                    candidates=candidates,
+                    validation_rounds=validation_rounds,
+                    validation_records=validation_records,
+                    complete_analysis=complete_analysis,
+                    error=(
+                        "Moins de trois entreprises ont franchi les controles de qualite "
+                        "et de validation multi-agents."
+                    ),
+                )
+
+            complete_analysis = self.portfolio_orchestrator.run(
+                self._portfolio_request(allocations, cash_amount, request),
+                use_cache=use_cache,
+                with_portfolio_slm=False,
+            )
+            validation_rounds = validation_round
+            records, rejected = self._validate_selection(
+                selected,
+                complete_analysis,
+                request,
+                validation_round,
+            )
+            validation_records.extend(records)
+            if not rejected:
+                validation_stable = True
+                break
+
+            rejection_by_ticker = {
+                record.ticker: record.reasons
+                for record in records
+                if record.decision == "rejected"
+            }
+            for candidate in candidates:
+                reasons = rejection_by_ticker.get(candidate.ticker)
+                if reasons:
+                    candidate.rejection_reason = (
+                        "Validation multi-agents: " + " ".join(reasons)
+                    )
+            selected = self._select_candidates(candidates, request.max_positions)
+
+        if not validation_stable or complete_analysis is None:
+            return self._failed_recommendation(
+                request=request,
                 universe=universe,
                 candidates=candidates,
-                allocations=allocations,
-                cash_amount=cash_amount,
-                cash_weight=cash_weight,
-                errors=[
-                    "Moins de trois entreprises disposent de donnees suffisantes pour composer un portefeuille."
-                ],
+                validation_rounds=validation_rounds,
+                validation_records=validation_records,
+                complete_analysis=complete_analysis,
+                error=(
+                    "La composition n'a pas obtenu une validation multi-agents stable "
+                    f"apres {MAX_VALIDATION_ROUNDS} tours."
+                ),
             )
 
-        portfolio_request = PortfolioAnalysisRequest(
-            holdings=[
-                PortfolioHoldingInput(
-                    ticker=item.ticker,
-                    quantity=item.quantity,
-                    average_cost=item.reference_price,
-                )
-                for item in allocations
-            ],
-            cash=cash_amount,
-            base_currency=request.base_currency,
-            benchmark_ticker=request.benchmark_ticker,
-            risk_free_rate_percent=request.risk_free_rate_percent,
-        )
-        complete_analysis = self.portfolio_orchestrator.run(
-            portfolio_request,
-            use_cache=use_cache,
-            with_portfolio_slm=False,
-        )
         strengths = self._strengths(allocations, complete_analysis)
         risks = self._risks(allocations, complete_analysis)
         summary = self._summary(request, allocations, complete_analysis)
@@ -153,6 +206,7 @@ class PortfolioRecommendationAgent:
         result = PortfolioRecommendationResult(
             status=status,
             generated_at=datetime.now(timezone.utc),
+            methodology_version=METHODOLOGY_VERSION,
             profile=request,
             universe=universe,
             candidates=sorted(candidates, key=lambda item: item.total_score, reverse=True),
@@ -162,19 +216,73 @@ class PortfolioRecommendationAgent:
             summary=summary,
             selection_method=[
                 "Estimation du potentiel de rendement : valorisation, croissance, qualite et momentum.",
+                "Score de selection ajuste selon l'horizon, le signal technique, la stabilite et la qualite des donnees.",
                 "Niveau de potentiel classe relativement a l'univers analyse.",
                 "Selection diversifiee avec au plus deux entreprises par secteur.",
                 "Allocation contrainte par ligne, par secteur et par reserve de liquidites.",
-                "Validation finale par les agents News, RAG, Risk et Synthesis de chaque position.",
+                "Quality gate bloquant avant selection.",
+                "Validation en boucle par News, RAG, Risk et Synthesis ; tout rejet provoque une nouvelle allocation.",
             ],
             strengths=strengths,
             risks=risks,
+            validation_rounds=validation_rounds,
+            validation_records=validation_records,
             portfolio_analysis=complete_analysis,
             warnings=warnings,
         )
         if with_slm and status != "failed":
             self._add_slm_summary(result)
         return result
+
+    @staticmethod
+    def _portfolio_request(
+        allocations: list[RecommendedAllocation],
+        cash_amount: float,
+        request: PortfolioRecommendationRequest,
+    ) -> PortfolioAnalysisRequest:
+        return PortfolioAnalysisRequest(
+            holdings=[
+                PortfolioHoldingInput(
+                    ticker=item.ticker,
+                    quantity=item.quantity,
+                    average_cost=item.reference_price,
+                )
+                for item in allocations
+            ],
+            cash=cash_amount,
+            base_currency=request.base_currency,
+            benchmark_ticker=request.benchmark_ticker,
+            risk_free_rate_percent=request.risk_free_rate_percent,
+        )
+
+    @staticmethod
+    def _failed_recommendation(
+        request: PortfolioRecommendationRequest,
+        universe: list[str],
+        candidates: list[RecommendationCandidateScore],
+        validation_rounds: int,
+        validation_records: list[RecommendationValidationRecord],
+        complete_analysis,
+        error: str,
+    ) -> PortfolioRecommendationResult:
+        # Une composition non validee ne doit jamais etre exposee comme proposition.
+        return PortfolioRecommendationResult(
+            status="failed",
+            generated_at=datetime.now(timezone.utc),
+            methodology_version=METHODOLOGY_VERSION,
+            profile=request,
+            universe=universe,
+            candidates=sorted(
+                candidates, key=lambda item: item.total_score, reverse=True
+            ),
+            allocations=[],
+            cash_amount=request.budget,
+            cash_weight=100,
+            validation_rounds=validation_rounds,
+            validation_records=validation_records,
+            portfolio_analysis=complete_analysis,
+            errors=[error],
+        )
 
     @staticmethod
     def _cap_universe(
@@ -248,6 +356,7 @@ class PortfolioRecommendationAgent:
                 name=market.company_profile.name if market else instrument.name,
                 sector=profile_sector or instrument.sector or "Unknown",
                 status="failed",
+                quality_issues=["Prix ou donnees de marche indisponibles."],
                 rejection_reason="Prix ou donnees de marche indisponibles.",
             )
         sector = market.company_profile.sector or instrument.sector or "Unknown"
@@ -257,7 +366,7 @@ class PortfolioRecommendationAgent:
         volatility = technical.volatility
         stability = self._clamp(round(100 - (volatility or 4) * VOLATILITY_STABILITY_FACTOR))
         momentum = self._momentum_score(market, technical)
-        data_quality = 100 if market.status == "success" else 70
+        data_quality, quality_issues = self._data_quality_score(market, technical)
         value = self._value_score(market)
         growth = self._growth_score(market)
         six_month_return = self._six_month_return(market)
@@ -265,7 +374,7 @@ class PortfolioRecommendationAgent:
         # pondere selon l'objectif. C'est ce score, tourne vers l'avenir, qui pilote la
         # selection (et non plus une note de qualite statique).
         weights = self._potential_weights(request)
-        total = self._clamp(
+        potential = self._clamp(
             round(
                 value * weights["value"]
                 + growth * weights["growth"]
@@ -273,10 +382,29 @@ class PortfolioRecommendationAgent:
                 + momentum * weights["momentum"]
             )
         )
+        selection_weights = self._selection_weights(request)
+        total = self._clamp(
+            round(
+                potential * selection_weights["potential"]
+                + technical_score * selection_weights["technical"]
+                + stability * selection_weights["stability"]
+                + data_quality * selection_weights["data_quality"]
+            )
+        )
         reasons = self._potential_reasons(market, six_month_return)
+        quality_gate_passed = (
+            data_quality >= QUALITY_GATE_THRESHOLDS[request.risk_profile]
+            and technical.status != "failed"
+        )
         rejection_reason = None
         if len(market.historical_prices) < MIN_HISTORY_POINTS:
             rejection_reason = "Historique insuffisant pour estimer le potentiel."
+        elif not quality_gate_passed:
+            details = " ".join(quality_issues[:3])
+            rejection_reason = (
+                f"Quality gate non franchi ({data_quality}/100, minimum "
+                f"{QUALITY_GATE_THRESHOLDS[request.risk_profile]}). {details}"
+            ).strip()
         elif request.risk_profile == "conservative" and stability < CONSERVATIVE_MIN_STABILITY:
             rejection_reason = "Volatilite trop elevee pour un profil prudent."
         elif total < MIN_SCREENING_SCORE:
@@ -287,6 +415,7 @@ class PortfolioRecommendationAgent:
             sector=sector,
             status=market.status,
             total_score=total,
+            potential_score=potential,
             fundamental_score=fundamental,
             technical_score=technical_score,
             stability_score=stability,
@@ -296,19 +425,149 @@ class PortfolioRecommendationAgent:
             growth_score=growth,
             current_price=market.price,
             volatility=volatility,
+            quality_gate_passed=quality_gate_passed,
+            quality_issues=quality_issues,
             reasons=reasons,
             rejection_reason=rejection_reason,
         )
 
     @staticmethod
     def _potential_weights(request: PortfolioRecommendationRequest) -> dict[str, float]:
-        """Ponderation du potentiel selon l'objectif (valorisation/croissance/qualite/momentum)."""
-        base = {
+        """Ponderation du potentiel selon l'objectif et l'horizon declare."""
+        weights = dict({
             "preservation": {"value": 0.30, "growth": 0.15, "quality": 0.40, "momentum": 0.15},
             "balanced": {"value": 0.30, "growth": 0.30, "quality": 0.20, "momentum": 0.20},
             "growth": {"value": 0.25, "growth": 0.40, "quality": 0.15, "momentum": 0.20},
+        }[request.objective])
+        if request.horizon_years <= 3:
+            weights["momentum"] += 0.10
+            weights["growth"] -= 0.05
+            weights["quality"] -= 0.05
+        elif request.horizon_years >= 8:
+            weights["growth"] += 0.10
+            weights["momentum"] -= 0.10
+        return weights
+
+    @staticmethod
+    def _selection_weights(request: PortfolioRecommendationRequest) -> dict[str, float]:
+        """Importance du potentiel, de la technique et du risque selon l'horizon."""
+        if request.horizon_years <= 3:
+            weights = {
+                "potential": 0.45,
+                "technical": 0.20,
+                "stability": 0.20,
+                "data_quality": 0.15,
+            }
+        elif request.horizon_years <= 7:
+            weights = {
+                "potential": 0.60,
+                "technical": 0.15,
+                "stability": 0.15,
+                "data_quality": 0.10,
+            }
+        else:
+            weights = {
+                "potential": 0.65,
+                "technical": 0.10,
+                "stability": 0.15,
+                "data_quality": 0.10,
+            }
+        if request.risk_profile == "conservative":
+            weights["potential"] -= 0.05
+            weights["stability"] += 0.05
+        elif request.risk_profile == "dynamic":
+            weights["potential"] += 0.05
+            weights["stability"] -= 0.05
+        return weights
+
+    @staticmethod
+    def _data_quality_score(
+        market: MarketDataResult,
+        technical: TechnicalResult,
+    ) -> tuple[int, list[str]]:
+        """Mesure la completude observable avant toute recommandation."""
+        score = 0
+        issues: list[str] = []
+
+        if market.price is not None and market.price > 0:
+            score += 20
+        else:
+            issues.append("Prix courant indisponible.")
+
+        history_count = len(market.historical_prices)
+        if history_count >= 120:
+            score += 25
+        elif history_count >= MIN_HISTORY_POINTS:
+            score += 20
+            issues.append(f"Historique limite a {history_count} observations.")
+        elif history_count >= 20:
+            score += 10
+            issues.append(f"Historique insuffisant: {history_count} observations.")
+        else:
+            issues.append(f"Historique critique: {history_count} observations.")
+
+        profile_fields = [
+            market.company_profile.name,
+            market.company_profile.sector,
+            market.company_profile.currency,
+            market.company_profile.exchange,
+        ]
+        profile_count = sum(value is not None for value in profile_fields)
+        score += round(10 * profile_count / len(profile_fields))
+        if profile_count < 2:
+            issues.append("Profil entreprise incomplet.")
+
+        ratios = {key.lower(): value for key, value in market.financial_ratios.items()}
+        required_ratios = {
+            "profit_margin",
+            "return_on_equity",
+            "debt_to_equity",
+            "forward_pe",
+            "earnings_growth",
+            "revenue_growth",
         }
-        return base[request.objective]
+        ratio_count = sum(
+            isinstance(ratios.get(key), (int, float)) for key in required_ratios
+        )
+        score += round(20 * ratio_count / len(required_ratios))
+        if ratio_count < 3:
+            issues.append(
+                f"Ratios financiers incomplets: {ratio_count}/{len(required_ratios)}."
+            )
+
+        statements = market.financial_statements_summary.model_dump()
+        statement_fields = [
+            "total_revenue",
+            "net_income",
+            "total_assets",
+            "total_debt",
+            "operating_cashflow",
+        ]
+        statement_count = sum(
+            isinstance(statements.get(key), (int, float)) for key in statement_fields
+        )
+        score += 3 * statement_count
+        if statement_count < 3:
+            issues.append(
+                f"Etats financiers incomplets: {statement_count}/{len(statement_fields)}."
+            )
+
+        source_count = len(set(market.sources_used))
+        if source_count >= 2:
+            score += 10
+        elif source_count == 1:
+            score += 5
+            issues.append("Une seule source de marche exploitable.")
+        else:
+            issues.append("Aucune source de marche tracee.")
+
+        if market.status != "success":
+            issues.append(f"Collecte marche au statut {market.status}.")
+        if technical.status == "failed":
+            issues.append("Analyse technique indisponible.")
+        elif technical.status == "partial":
+            issues.append("Analyse technique partielle.")
+        return min(100, round(score)), issues
 
     def _value_score(self, market: MarketDataResult) -> int:
         """Attrait de la valorisation : plus l'action est decotee, plus le potentiel est eleve."""
@@ -448,6 +707,84 @@ class PortfolioRecommendationAgent:
                     break
         return selected
 
+    @staticmethod
+    def _validate_selection(
+        selected: list[RecommendationCandidateScore],
+        complete_analysis: PortfolioCompleteAnalysisResult,
+        request: PortfolioRecommendationRequest,
+        validation_round: int,
+    ) -> tuple[list[RecommendationValidationRecord], set[str]]:
+        analyses = {
+            item.ticker: item for item in complete_analysis.individual_analyses
+        }
+        records: list[RecommendationValidationRecord] = []
+        rejected: set[str] = set()
+        min_confidence = VALIDATION_MIN_CONFIDENCE[request.risk_profile]
+        min_score = VALIDATION_MIN_GLOBAL_SCORE[request.risk_profile]
+
+        for candidate in selected:
+            analysis = analyses.get(candidate.ticker)
+            reasons: list[str] = []
+            if analysis is None:
+                recommendation = "donnees_insuffisantes"
+                global_score = 0
+                confidence_score = 0
+                risk_level = "high"
+                reasons.append("Analyse individuelle absente.")
+            else:
+                recommendation = analysis.recommendation
+                global_score = analysis.global_score
+                confidence_score = analysis.confidence_score
+                risk_level = analysis.risk_level
+                if analysis.status == "failed":
+                    reasons.append("Analyse individuelle en echec.")
+                if recommendation in {"defavorable", "donnees_insuffisantes"}:
+                    reasons.append(
+                        f"Recommandation individuelle {recommendation.replace('_', ' ')}."
+                    )
+                if confidence_score < min_confidence:
+                    reasons.append(
+                        f"Confiance {confidence_score}/100 inferieure au minimum "
+                        f"{min_confidence}/100."
+                    )
+                if global_score < min_score:
+                    reasons.append(
+                        f"Score global {global_score}/100 inferieur au minimum "
+                        f"{min_score}/100."
+                    )
+                if risk_level == "high" and request.risk_profile == "conservative":
+                    reasons.append("Risque eleve incompatible avec un profil prudent.")
+                elif risk_level == "high" and request.risk_profile == "moderate":
+                    if (
+                        recommendation != "favorable"
+                        or global_score < 70
+                        or confidence_score < 70
+                    ):
+                        reasons.append(
+                            "Risque eleve insuffisamment compense pour un profil modere."
+                        )
+
+            decision = "rejected" if reasons else "accepted"
+            if decision == "rejected":
+                rejected.add(candidate.ticker)
+            else:
+                reasons = [
+                    "Seuils de score, confiance et risque franchis par l'analyse multi-agents."
+                ]
+            records.append(
+                RecommendationValidationRecord(
+                    round=validation_round,
+                    ticker=candidate.ticker,
+                    decision=decision,
+                    recommendation=recommendation,
+                    global_score=global_score,
+                    confidence_score=confidence_score,
+                    risk_level=risk_level,
+                    reasons=reasons,
+                )
+            )
+        return records, rejected
+
     def _allocate(
         self,
         selected: list[RecommendationCandidateScore],
@@ -505,7 +842,17 @@ class PortfolioRecommendationAgent:
                     reasons=candidate.reasons,
                 )
             )
-        allocated_amount = sum(item.amount for item in allocations)
+        target_invested_amount = round(request.budget * investable / 100, 2)
+        allocated_amount = round(sum(item.amount for item in allocations), 2)
+        if allocations and allocated_amount > target_invested_amount:
+            # Les arrondis monétaires ne doivent jamais consommer la réserve minimale.
+            excess = round(allocated_amount - target_invested_amount, 2)
+            largest = max(allocations, key=lambda item: item.amount)
+            largest.amount = round(largest.amount - excess, 2)
+            largest.quantity = round(largest.amount / largest.reference_price, 6)
+            allocated_amount = round(sum(item.amount for item in allocations), 2)
+        for item in allocations:
+            item.weight = round(item.amount / request.budget * 100, 2)
         cash_amount = round(max(0, request.budget - allocated_amount), 2)
         cash_weight = round(cash_amount / request.budget * 100, 2)
         return allocations, cash_amount, cash_weight

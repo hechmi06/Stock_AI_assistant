@@ -415,6 +415,9 @@ export type PortfolioCompleteAnalysis = {
     status: AnalysisStatus;
     verdict: PortfolioVerdict;
     global_score: number;
+    data_confidence_score: number;
+    model_confidence_score: number;
+    decision_confidence_score: number;
     confidence_score: number;
     confidence_level: RiskLevel;
     scores: {
@@ -481,6 +484,7 @@ export type PortfolioRecommendation = {
   status: AnalysisStatus;
   generated_at: string;
   workflow: "portfolio_recommendation";
+  methodology_version: string;
   profile: PortfolioRecommendationRequest;
   universe: string[];
   candidates: Array<{
@@ -489,6 +493,7 @@ export type PortfolioRecommendation = {
     sector: string;
     status: AnalysisStatus;
     total_score: number;
+    potential_score: number;
     fundamental_score: number;
     technical_score: number;
     stability_score: number;
@@ -499,6 +504,8 @@ export type PortfolioRecommendation = {
     potential_label: string | null;
     current_price: number | null;
     volatility: number | null;
+    quality_gate_passed: boolean;
+    quality_issues: string[];
     reasons: string[];
     rejection_reason: string | null;
   }>;
@@ -521,6 +528,22 @@ export type PortfolioRecommendation = {
   selection_method: string[];
   strengths: string[];
   risks: string[];
+  validation_rounds: number;
+  validation_records: Array<{
+    round: number;
+    ticker: string;
+    decision: "accepted" | "rejected";
+    recommendation:
+      | "favorable"
+      | "a_surveiller"
+      | "prudence"
+      | "defavorable"
+      | "donnees_insuffisantes";
+    global_score: number;
+    confidence_score: number;
+    risk_level: "low" | "medium" | "high";
+    reasons: string[];
+  }>;
   portfolio_analysis: PortfolioCompleteAnalysis | null;
   warnings: string[];
   errors: string[];

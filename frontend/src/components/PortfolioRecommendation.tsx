@@ -68,6 +68,16 @@ function verdictLabel(value: string | undefined) {
   }[value ?? ""] ?? "En attente";
 }
 
+function recommendationLabel(value: string) {
+  return {
+    favorable: "Favorable",
+    a_surveiller: "A surveiller",
+    prudence: "Prudence",
+    defavorable: "Defavorable",
+    donnees_insuffisantes: "Donnees insuffisantes",
+  }[value] ?? value;
+}
+
 export function PortfolioRecommendation({ onOpenAnalysis }: { onOpenAnalysis: (ticker: string) => void }) {
   const [budget, setBudget] = useState(25_000);
   const [riskProfile, setRiskProfile] = useState<InvestorRiskProfile>("moderate");
@@ -198,17 +208,45 @@ export function PortfolioRecommendation({ onOpenAnalysis }: { onOpenAnalysis: (t
         </div>
       ) : null}
 
-      {result ? (
+      {result?.status === "failed" ? (
+        <>
+          <section className="recommendation-blocked">
+            <AlertTriangle size={20} />
+            <div>
+              <strong>Aucune recommandation suffisamment fiable</strong>
+              {result.errors.map((item) => <p key={item}>{item}</p>)}
+              <small>Methode {result.methodology_version ?? "non communiquee"} · {result.validation_rounds ?? 0} tour(s) de validation</small>
+            </div>
+          </section>
+          <details className="recommendation-candidates">
+            <summary><Layers3 size={15} /> Diagnostic des {result.candidates.length} entreprises</summary>
+            <div className="recommendation-candidate-grid">
+              {result.candidates.map((candidate) => (
+                <div key={candidate.ticker}>
+                  <span><strong>{candidate.ticker}</strong><em>{candidate.data_quality_score}/100</em></span>
+                  <small>{candidate.sector} · Selection {candidate.total_score}/100 · Donnees {candidate.data_quality_score}/100</small>
+                  <p>{candidate.rejection_reason || (candidate.quality_issues ?? []).join(" · ")}</p>
+                </div>
+              ))}
+            </div>
+          </details>
+        </>
+      ) : result ? (
         <>
           <section className="recommendation-verdict">
             <div className="recommendation-verdict-score">
               <span>{verdictLabel(synthesis?.verdict)}</span>
               <strong>{synthesis?.global_score ?? 0}/100</strong>
-              <small>Confiance {synthesis?.confidence_score ?? 0}/100</small>
+              <small>Score global d'analyse</small>
             </div>
             <div className="recommendation-summary">
               <div><BrainCircuit size={17} /><strong>Argumentaire</strong><span>{result.slm_summary ? `${result.slm_summary.provider} · ${result.slm_summary.model}` : "Synthese deterministe"}</span></div>
               <p>{result.summary}</p>
+              <div className="portfolio-confidence-breakdown">
+                <span>Donnees <strong>{synthesis?.data_confidence_score ?? synthesis?.confidence_score ?? 0}/100</strong></span>
+                <span>Modele <strong>{synthesis?.model_confidence_score ?? synthesis?.confidence_score ?? 0}/100</strong></span>
+                <span>Decision <strong>{synthesis?.decision_confidence_score ?? synthesis?.confidence_score ?? 0}/100</strong></span>
+              </div>
             </div>
             <div className="recommendation-kpis">
               <div><span>Rendement annualise</span><strong>{percent(performance?.annualized_return_percent)}</strong></div>
@@ -261,13 +299,37 @@ export function PortfolioRecommendation({ onOpenAnalysis }: { onOpenAnalysis: (t
             </section>
           </div>
 
+          <details className="recommendation-validation">
+            <summary>
+              <ShieldCheck size={15} />
+              Validation multi-agents
+              <span>Methode {result.methodology_version ?? "non communiquee"} · {result.validation_rounds ?? 0} tour(s)</span>
+            </summary>
+            <div className="recommendation-validation-table">
+              <div className="recommendation-validation-row header">
+                <span>Tour</span><span>Titre</span><span>Decision</span><span>Diagnostic</span><span>Score</span><span>Confiance</span><span>Justification</span>
+              </div>
+              {(result.validation_records ?? []).map((record, index) => (
+                <div className={`recommendation-validation-row ${record.decision}`} key={`${record.round}-${record.ticker}-${index}`}>
+                  <span>{record.round}</span>
+                  <span><strong>{record.ticker}</strong></span>
+                  <span>{record.decision === "accepted" ? "Valide" : "Rejete"}</span>
+                  <span>{recommendationLabel(record.recommendation)}</span>
+                  <span>{record.global_score}/100</span>
+                  <span>{record.confidence_score}/100</span>
+                  <span>{record.reasons.join(" ")}</span>
+                </div>
+              ))}
+            </div>
+          </details>
+
           <details className="recommendation-candidates">
             <summary><Layers3 size={15} /> Screening des {result.candidates.length} entreprises</summary>
             <div className="recommendation-candidate-grid">
               {result.candidates.map((candidate) => (
                 <div className={selectedTickers.has(candidate.ticker) ? "selected" : ""} key={candidate.ticker}>
                   <span><strong>{candidate.ticker}</strong><em className={POTENTIAL_CLASS[candidate.potential_label ?? ""] ?? ""} title={`${candidate.total_score}/100`}>{potentialDisplay(candidate.potential_label)}</em></span>
-                  <small>{candidate.sector}</small>
+                  <small>{candidate.sector} · Selection {candidate.total_score}/100 · Donnees {candidate.data_quality_score}/100</small>
                   <p>{candidate.rejection_reason || candidate.reasons.slice(0, 2).join(" · ")}</p>
                 </div>
               ))}

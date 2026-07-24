@@ -183,6 +183,12 @@ class PortfolioSynthesisResultDto {
   @ApiProperty({ enum: ["success", "partial", "failed"] }) status!: string;
   @ApiProperty({ enum: ["robuste", "coherent", "a_reequilibrer", "fragile", "donnees_insuffisantes"] }) verdict!: string;
   @ApiProperty() global_score!: number;
+  @ApiProperty({ description: "Disponibilite, completude et couverture des sources." })
+  data_confidence_score!: number;
+  @ApiProperty({ description: "Support statistique et completude des metriques calculees." })
+  model_confidence_score!: number;
+  @ApiProperty({ description: "Confiance finale utilisee pour autoriser le verdict." })
+  decision_confidence_score!: number;
   @ApiProperty() confidence_score!: number;
   @ApiProperty({ enum: ["low", "medium", "high"] }) confidence_level!: string;
   @ApiProperty({ type: PortfolioSynthesisScoresDto }) scores!: PortfolioSynthesisScoresDto;
@@ -244,15 +250,35 @@ class RecommendationCandidateScoreDto {
   @ApiProperty() sector!: string;
   @ApiProperty() status!: string;
   @ApiProperty() total_score!: number;
+  @ApiProperty() potential_score!: number;
   @ApiProperty() fundamental_score!: number;
   @ApiProperty() technical_score!: number;
   @ApiProperty() stability_score!: number;
   @ApiProperty() momentum_score!: number;
   @ApiProperty() data_quality_score!: number;
+  @ApiProperty() value_score!: number;
+  @ApiProperty() growth_score!: number;
+  @ApiProperty({ nullable: true }) potential_label!: string | null;
   @ApiProperty({ nullable: true }) current_price!: number | null;
   @ApiProperty({ nullable: true }) volatility!: number | null;
+  @ApiProperty() quality_gate_passed!: boolean;
+  @ApiProperty({ type: [String] }) quality_issues!: string[];
   @ApiProperty({ type: [String] }) reasons!: string[];
   @ApiProperty({ nullable: true }) rejection_reason!: string | null;
+}
+
+class RecommendationValidationRecordDto {
+  @ApiProperty() round!: number;
+  @ApiProperty() ticker!: string;
+  @ApiProperty({ enum: ["accepted", "rejected"] }) decision!: string;
+  @ApiProperty({
+    enum: ["favorable", "a_surveiller", "prudence", "defavorable", "donnees_insuffisantes"],
+  })
+  recommendation!: string;
+  @ApiProperty() global_score!: number;
+  @ApiProperty() confidence_score!: number;
+  @ApiProperty({ enum: ["low", "medium", "high"] }) risk_level!: string;
+  @ApiProperty({ type: [String] }) reasons!: string[];
 }
 
 class RecommendedAllocationDto {
@@ -272,6 +298,7 @@ export class PortfolioRecommendationResultDto {
   @ApiProperty({ enum: ["success", "partial", "failed"] }) status!: string;
   @ApiProperty() generated_at!: string;
   @ApiProperty({ example: "portfolio_recommendation" }) workflow!: string;
+  @ApiProperty({ example: "2.0" }) methodology_version!: string;
   @ApiProperty({ type: PortfolioRecommendationRequestDto }) profile!: PortfolioRecommendationRequestDto;
   @ApiProperty({ type: [String] }) universe!: string[];
   @ApiProperty({ type: [RecommendationCandidateScoreDto] }) candidates!: RecommendationCandidateScoreDto[];
@@ -282,6 +309,9 @@ export class PortfolioRecommendationResultDto {
   @ApiProperty({ type: [String] }) selection_method!: string[];
   @ApiProperty({ type: [String] }) strengths!: string[];
   @ApiProperty({ type: [String] }) risks!: string[];
+  @ApiProperty() validation_rounds!: number;
+  @ApiProperty({ type: [RecommendationValidationRecordDto] })
+  validation_records!: RecommendationValidationRecordDto[];
   @ApiProperty({ type: PortfolioCompleteAnalysisResultDto, nullable: true }) portfolio_analysis!: PortfolioCompleteAnalysisResultDto | null;
   @ApiProperty({ type: [String] }) warnings!: string[];
   @ApiProperty({ type: [String] }) errors!: string[];
