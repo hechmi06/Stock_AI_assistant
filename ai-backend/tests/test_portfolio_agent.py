@@ -3,6 +3,7 @@ import unittest
 from app.agents.portfolio_agent import PortfolioAgent
 from app.agents.schemas import (
     CompanyProfile,
+    FinancialStatementsSummary,
     HistoricalPrice,
     MarketDataResult,
     PortfolioAnalysisRequest,
@@ -169,7 +170,30 @@ class PortfolioAgentTest(unittest.TestCase):
                 status="success",
                 price=prices[-1].close,
                 historical_prices=prices,
-                company_profile=CompanyProfile(sector=sector, currency="USD"),
+                company_profile=CompanyProfile(
+                    sector=sector,
+                    currency="USD",
+                    market_cap=3_000_000_000,
+                    industry="Consumer Electronics",
+                    country="United States",
+                    website="https://example.com",
+                    exchange="NASDAQ",
+                ),
+                financial_ratios={
+                    "forward_pe": 24.5,
+                    "price_to_book": 7.2,
+                    "profit_margin": 0.21,
+                    "return_on_equity": 1.32,
+                    "debt_to_equity": 1.4,
+                    "revenue_growth": 0.08,
+                },
+                financial_statements_summary=FinancialStatementsSummary(
+                    fiscal_date="2025-12-31",
+                    total_revenue=100_000_000,
+                    net_income=21_000_000,
+                    total_debt=30_000_000,
+                    operating_cashflow=25_000_000,
+                ),
                 sources_used=["yfinance"],
             )
 
@@ -197,6 +221,22 @@ class PortfolioAgentTest(unittest.TestCase):
         self.assertIsNotNone(result.performance.jensen_alpha_percent)
         self.assertEqual(len(result.correlations), 1)
         self.assertEqual(result.technical_summary.bullish_positions, 2)
+        self.assertEqual(len(result.performance.curve), 31)
+        self.assertEqual(result.performance.curve[0].portfolio_return_percent, 0)
+        self.assertAlmostEqual(
+            result.performance.curve[-1].portfolio_return_percent,
+            result.performance.cumulative_return_percent,
+            places=2,
+        )
+        fundamentals = result.positions[0].fundamentals
+        self.assertEqual(fundamentals.profit_margin_percent, 21)
+        self.assertEqual(fundamentals.return_on_equity_percent, 132)
+        self.assertEqual(fundamentals.forward_pe, 24.5)
+        self.assertEqual(fundamentals.net_income, 21_000_000)
+        self.assertGreater(fundamentals.data_completeness_score, 60)
+        self.assertEqual(len(result.positions[0].historical_prices), 31)
+        self.assertEqual(result.positions[0].company.exchange, "NASDAQ")
+        self.assertEqual(result.positions[0].company.country, "United States")
 
 
 if __name__ == "__main__":

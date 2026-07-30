@@ -1,5 +1,5 @@
 import { mockStocks } from "../data/mockStocks";
-import type { EvaluationReport, MarketDashboard, NewsResult, OrchestratedAnalysis, PortfolioAnalysis, PortfolioCompleteAnalysis, PortfolioHolding, PortfolioRecommendation, PortfolioRecommendationRequest, StockAnalysis, UsStockSearchResult } from "../types";
+import type { BacktestResult, EvaluationReport, HistoricalReplayResult, MarketDashboard, NewsResult, OrchestratedAnalysis, PortfolioAnalysis, PortfolioCompleteAnalysis, PortfolioHolding, PortfolioRecommendation, PortfolioRecommendationRequest, SocialMediaResult, StockAnalysis, TechnicalCalibrationResult, UsStockSearchResult } from "../types";
 
 export async function analyzePortfolio(
   holdings: PortfolioHolding[],
@@ -99,6 +99,20 @@ export async function fetchNews(ticker: string): Promise<NewsResult> {
   return await response.json();
 }
 
+export async function fetchSocialMedia(
+  ticker: string,
+  fresh = false,
+): Promise<SocialMediaResult> {
+  const normalizedTicker = ticker.trim().toUpperCase();
+  const response = await fetch(
+    `/api/stocks/${normalizedTicker}/social-media?fresh=${fresh}&withSlm=true`,
+  );
+  if (!response.ok) {
+    throw new Error(`Gateway returned ${response.status}`);
+  }
+  return await response.json();
+}
+
 export async function fetchStockAnalysis(ticker: string): Promise<StockAnalysis> {
   const normalizedTicker = ticker.trim().toUpperCase();
 
@@ -191,6 +205,94 @@ export async function fetchTechnicalEvaluation(ticker: string): Promise<Evaluati
     throw new Error(`Gateway returned ${response.status}`);
   }
 
+  return await response.json();
+}
+
+export async function fetchBacktest(
+  ticker: string,
+  options: {
+    benchmark?: string;
+    period?: "2y" | "5y" | "10y";
+    horizonDays?: number;
+    minHistory?: number;
+    transactionCostBps?: number;
+    slippageBps?: number;
+  } = {},
+): Promise<BacktestResult> {
+  const normalizedTicker = ticker.trim().toUpperCase();
+  const params = new URLSearchParams({
+    benchmark: (options.benchmark ?? "SPY").trim().toUpperCase(),
+    period: options.period ?? "5y",
+    horizonDays: String(options.horizonDays ?? 20),
+    minHistory: String(options.minHistory ?? 60),
+    transactionCostBps: String(options.transactionCostBps ?? 5),
+    slippageBps: String(options.slippageBps ?? 5),
+  });
+  const response = await fetch(`/api/stocks/${normalizedTicker}/backtest?${params.toString()}`);
+  if (!response.ok) {
+    let message = `Gateway returned ${response.status}`;
+    try {
+      const payload = await response.json() as { message?: string };
+      message = payload.message || message;
+    } catch {
+      // Keep the HTTP status if the response is not JSON.
+    }
+    throw new Error(message);
+  }
+  return await response.json();
+}
+
+export async function fetchTechnicalCalibration(options: {
+  tickers?: string;
+  benchmark?: string;
+  period?: "2y" | "5y" | "10y";
+  horizons?: string;
+  transactionCostBps?: number;
+  slippageBps?: number;
+} = {}): Promise<TechnicalCalibrationResult> {
+  const params = new URLSearchParams({
+    benchmark: (options.benchmark ?? "SPY").trim().toUpperCase(),
+    period: options.period ?? "5y",
+    horizons: options.horizons ?? "5,20,60",
+    transactionCostBps: String(options.transactionCostBps ?? 5),
+    slippageBps: String(options.slippageBps ?? 5),
+  });
+  if (options.tickers?.trim()) params.set("tickers", options.tickers);
+  const response = await fetch(`/api/stocks/backtesting/calibration?${params.toString()}`);
+  if (!response.ok) {
+    let message = `Gateway returned ${response.status}`;
+    try {
+      const payload = await response.json() as { message?: string };
+      message = payload.message || message;
+    } catch {
+      // Keep the HTTP status if the response is not JSON.
+    }
+    throw new Error(message);
+  }
+  return await response.json();
+}
+
+export async function fetchHistoricalReplay(
+  ticker: string,
+  asOf: string,
+  allowReconstructedPrices = false,
+): Promise<HistoricalReplayResult> {
+  const normalizedTicker = ticker.trim().toUpperCase();
+  const params = new URLSearchParams({
+    asOf,
+    allowReconstructedPrices: String(allowReconstructedPrices),
+  });
+  const response = await fetch(`/api/stocks/${normalizedTicker}/replay?${params.toString()}`);
+  if (!response.ok) {
+    let message = `Gateway returned ${response.status}`;
+    try {
+      const payload = await response.json() as { message?: string };
+      message = payload.message || message;
+    } catch {
+      // Keep the HTTP status if the response is not JSON.
+    }
+    throw new Error(message);
+  }
   return await response.json();
 }
 

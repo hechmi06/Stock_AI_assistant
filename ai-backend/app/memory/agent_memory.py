@@ -14,6 +14,7 @@ from app.agents.schemas import MarketDataResult, NewsResult, SynthesisResult, Te
 
 from .documentary_memory import DocumentaryMemory
 from .knowledge_graph import KnowledgeGraph
+from .point_in_time import PointInTimeStore
 from .session_memory import SessionMemory
 from .structured_memory import StructuredMemory
 from .temporal_memory import TemporalMemory
@@ -23,10 +24,16 @@ class AgentMemory:
     def __init__(self, db_path: Path | None = None) -> None:
         self.structured = StructuredMemory(db_path)
         self.graph = KnowledgeGraph(db_path)
+        self.point_in_time = PointInTimeStore(db_path)
 
     def remember(self, result: MarketDataResult) -> str:
         """Memorise un resultat de collecte (tables structurees + faits du graphe)."""
         collected_at = self.structured.store(result)
+        self.point_in_time.safe_record(
+            self.point_in_time.record_market_data,
+            result,
+            collected_at,
+        )
         self.graph.ingest_result(result)
         return collected_at
 
@@ -45,10 +52,16 @@ class NewsAgentMemory:
     def __init__(self, db_path: Path | None = None) -> None:
         self.documentary = DocumentaryMemory(db_path)
         self.graph = KnowledgeGraph(db_path)
+        self.point_in_time = PointInTimeStore(db_path)
 
     def remember(self, result: NewsResult) -> tuple[str, int]:
         """Memorise le run + les articles, met a jour les faits news du graphe."""
         collected_at, new_articles = self.documentary.store(result)
+        self.point_in_time.safe_record(
+            self.point_in_time.record_news,
+            result,
+            collected_at,
+        )
         self.graph.ingest_news_result(result)
         return collected_at, new_articles
 
@@ -66,10 +79,19 @@ class SynthesisAgentMemory:
     def __init__(self, db_path: Path | None = None) -> None:
         self.session = SessionMemory(db_path)
         self.graph = KnowledgeGraph(db_path)
+        self.point_in_time = PointInTimeStore(db_path)
 
     def remember(self, result: SynthesisResult) -> str:
         """Memorise la synthese de la session + met a jour les faits du graphe."""
         generated_at = self.session.store(result)
+        self.point_in_time.safe_record(
+            self.point_in_time.record_derived,
+            result.ticker,
+            "synthesis",
+            result.model_dump(mode="json"),
+            result.status,
+            generated_at,
+        )
         self.graph.ingest_synthesis_result(result)
         return generated_at
 
@@ -90,10 +112,19 @@ class TechnicalAgentMemory:
     def __init__(self, db_path: Path | None = None) -> None:
         self.temporal = TemporalMemory(db_path)
         self.graph = KnowledgeGraph(db_path)
+        self.point_in_time = PointInTimeStore(db_path)
 
     def remember(self, result: TechnicalResult) -> str:
         """Memorise les indicateurs dates + met a jour les faits techniques du graphe."""
         computed_at = self.temporal.store(result)
+        self.point_in_time.safe_record(
+            self.point_in_time.record_derived,
+            result.ticker,
+            "technical",
+            result.model_dump(mode="json"),
+            result.status,
+            computed_at,
+        )
         self.graph.ingest_technical_result(result)
         return computed_at
 

@@ -14,3 +14,5 @@ __pycache__/
 eval_report.json
 data/
 mcp-server/.cache/
+.claude/
+**/.claude/

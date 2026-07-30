@@ -1,5 +1,6 @@
-import { Body, Controller, Post, Query } from "@nestjs/common";
-import { ApiOkResponse, ApiOperation, ApiQuery, ApiTags } from "@nestjs/swagger";
+import { Body, Controller, Post, Query, UseGuards } from "@nestjs/common";
+import { ApiCookieAuth, ApiOkResponse, ApiOperation, ApiQuery, ApiTags } from "@nestjs/swagger";
+import { SessionAuthGuard } from "../auth/session-auth.guard";
 import {
   PortfolioAnalysisRequestDto,
   PortfolioAnalysisResultDto,
@@ -10,6 +11,8 @@ import {
 import { PortfolioService } from "./portfolio.service";
 
 @ApiTags("portfolio")
+@ApiCookieAuth("stock_ai_session")
+@UseGuards(SessionAuthGuard)
 @Controller("portfolio")
 export class PortfolioController {
   constructor(private readonly portfolioService: PortfolioService) {}

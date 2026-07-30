@@ -1,15 +1,22 @@
-import { Controller, Get, Param, Post, Query } from "@nestjs/common";
-import { ApiOkResponse, ApiOperation, ApiParam, ApiQuery, ApiTags } from "@nestjs/swagger";
+import { Controller, Get, Param, Post, Query, UseGuards } from "@nestjs/common";
+import { ApiCookieAuth, ApiOkResponse, ApiOperation, ApiParam, ApiQuery, ApiTags } from "@nestjs/swagger";
+import { SessionAuthGuard } from "../auth/session-auth.guard";
 import { EvaluationReportDto } from "./dto/evaluation-report.dto";
+import { BacktestResultDto, TechnicalCalibrationResultDto } from "./dto/backtest-result.dto";
+import { HistoricalReplayResultDto } from "./dto/historical-replay.dto";
 import { MarketDataResultDto } from "./dto/market-data-result.dto";
 import { NewsResultDto } from "./dto/news-result.dto";
+import { PointInTimeQueryResultDto, PointInTimeSummaryDto } from "./dto/point-in-time.dto";
 import { RagIngestResultDto, RagResultDto } from "./dto/rag-result.dto";
 import { RiskResultDto } from "./dto/risk-result.dto";
+import { SocialMediaResultDto } from "./dto/social-media-result.dto";
 import { TechnicalResultDto } from "./dto/technical-result.dto";
 import { OrchestratedAnalysisDto, SynthesisResultDto } from "./dto/synthesis-result.dto";
 import { StocksService } from "./stocks.service";
 
 @ApiTags("stocks")
+@ApiCookieAuth("stock_ai_session")
+@UseGuards(SessionAuthGuard)
 @Controller("stocks")
 export class StocksController {
   constructor(private readonly stocksService: StocksService) {}
@@ -118,6 +125,138 @@ export class StocksController {
   }
 
   @ApiOperation({
+    summary: "Backtest walk-forward du TechnicalAgent",
+    description:
+      "Rejoue les signaux techniques sans fuite de donnees, en strategie long/cash, puis compare rendement, Sharpe et drawdown au benchmark.",
+  })
+  @ApiParam({ name: "ticker", example: "AAPL" })
+  @ApiQuery({ name: "benchmark", required: false, example: "SPY" })
+  @ApiQuery({ name: "period", required: false, enum: ["2y", "5y", "10y"], example: "5y" })
+  @ApiQuery({ name: "horizonDays", required: false, type: Number, example: 20 })
+  @ApiQuery({ name: "minHistory", required: false, type: Number, example: 60 })
+  @ApiQuery({ name: "transactionCostBps", required: false, type: Number, example: 5 })
+  @ApiQuery({ name: "slippageBps", required: false, type: Number, example: 5 })
+  @ApiOkResponse({ type: BacktestResultDto })
+  @Get(":ticker/backtest")
+  getBacktest(
+    @Param("ticker") ticker: string,
+    @Query("benchmark") benchmark?: string,
+    @Query("period") period?: string,
+    @Query("horizonDays") horizonDays?: string,
+    @Query("minHistory") minHistory?: string,
+    @Query("transactionCostBps") transactionCostBps?: string,
+    @Query("slippageBps") slippageBps?: string,
+  ) {
+    return this.stocksService.getBacktest(ticker, {
+      benchmark: benchmark ?? "SPY",
+      period: period ?? "5y",
+      horizonDays: horizonDays ? Number(horizonDays) : 20,
+      minHistory: minHistory ? Number(minHistory) : 60,
+      transactionCostBps: transactionCostBps ? Number(transactionCostBps) : 5,
+      slippageBps: slippageBps ? Number(slippageBps) : 5,
+    });
+  }
+
+  @ApiOperation({
+    summary: "Calibration multi-actions du TechnicalAgent",
+    description:
+      "Optimise le seuil sur train (60%), le fige, puis mesure validation (20%) et test hors echantillon (20%) sur plusieurs titres et horizons.",
+  })
+  @ApiQuery({ name: "tickers", required: false, example: "AAPL,MSFT,NVDA,GOOGL,AMZN,META,TSLA,JPM,JNJ,XOM,UNH,PG,HD,CAT,COST" })
+  @ApiQuery({ name: "benchmark", required: false, example: "SPY" })
+  @ApiQuery({ name: "period", required: false, enum: ["2y", "5y", "10y"], example: "5y" })
+  @ApiQuery({ name: "horizons", required: false, example: "5,20,60" })
+  @ApiQuery({ name: "transactionCostBps", required: false, type: Number, example: 5 })
+  @ApiQuery({ name: "slippageBps", required: false, type: Number, example: 5 })
+  @ApiOkResponse({ type: TechnicalCalibrationResultDto })
+  @Get("backtesting/calibration")
+  getTechnicalCalibration(
+    @Query("tickers") tickers?: string,
+    @Query("benchmark") benchmark?: string,
+    @Query("period") period?: string,
+    @Query("horizons") horizons?: string,
+    @Query("transactionCostBps") transactionCostBps?: string,
+    @Query("slippageBps") slippageBps?: string,
+  ) {
+    return this.stocksService.getTechnicalCalibration({
+      tickers,
+      benchmark: benchmark ?? "SPY",
+      period: period ?? "5y",
+      horizons: horizons ?? "5,20,60",
+      transactionCostBps: transactionCostBps ? Number(transactionCostBps) : 5,
+      slippageBps: slippageBps ? Number(slippageBps) : 5,
+    });
+  }
+
+  @ApiOperation({
+    summary: "Journal point-in-time d'une action",
+    description:
+      "Retourne uniquement les evenements disponibles a la date asOf. observedOnly exclut les donnees reconstruites a posteriori.",
+  })
+  @ApiParam({ name: "ticker", example: "MSFT" })
+  @ApiQuery({ name: "component", required: false, example: "fundamental" })
+  @ApiQuery({ name: "eventType", required: false, example: "financial_statement" })
+  @ApiQuery({ name: "asOf", required: false, example: "2025-07-30T12:00:00Z" })
+  @ApiQuery({ name: "observedOnly", required: false, type: Boolean, example: true })
+  @ApiQuery({ name: "limit", required: false, type: Number, example: 100 })
+  @ApiOkResponse({ type: PointInTimeQueryResultDto })
+  @Get(":ticker/timeline")
+  getPointInTimeEvents(
+    @Param("ticker") ticker: string,
+    @Query("component") component?: string,
+    @Query("eventType") eventType?: string,
+    @Query("asOf") asOf?: string,
+    @Query("observedOnly") observedOnly?: string,
+    @Query("limit") limit?: string,
+  ) {
+    return this.stocksService.getPointInTimeEvents(ticker, {
+      component,
+      eventType,
+      asOf,
+      observedOnly: observedOnly === "true",
+      limit: limit ? Number(limit) : 100,
+    });
+  }
+
+  @ApiOperation({
+    summary: "Couverture de l'archive point-in-time",
+    description: "Compte les evenements par composant, type et mode de connaissance.",
+  })
+  @ApiParam({ name: "ticker", example: "MSFT" })
+  @ApiOkResponse({ type: PointInTimeSummaryDto })
+  @Get(":ticker/timeline/summary")
+  getPointInTimeSummary(@Param("ticker") ticker: string) {
+    return this.stocksService.getPointInTimeSummary(ticker);
+  }
+
+  @ApiOperation({
+    summary: "Replay historique multi-agents",
+    description:
+      "Recalcule Technical, Risk et Synthesis sans appel externe depuis les donnees disponibles a asOf. Le mode strict exclut les prix reconstruits.",
+  })
+  @ApiParam({ name: "ticker", example: "MSFT" })
+  @ApiQuery({ name: "asOf", required: true, example: "2025-07-30T12:00:00Z" })
+  @ApiQuery({
+    name: "allowReconstructedPrices",
+    required: false,
+    type: Boolean,
+    example: false,
+  })
+  @ApiOkResponse({ type: HistoricalReplayResultDto })
+  @Get(":ticker/replay")
+  replayHistoricalAnalysis(
+    @Param("ticker") ticker: string,
+    @Query("asOf") asOf: string,
+    @Query("allowReconstructedPrices") allowReconstructedPrices?: string,
+  ) {
+    return this.stocksService.replayHistoricalAnalysis(
+      ticker,
+      asOf,
+      allowReconstructedPrices === "true",
+    );
+  }
+
+  @ApiOperation({
     summary: "Actualites + sentiment via NewsAgent",
     description:
       "Agrege les news FMP + Yahoo RSS, deduplique, puis analyse le sentiment global et par article via le SLM Nebius.",
@@ -127,6 +266,28 @@ export class StocksController {
   @Get(":ticker/news")
   getNews(@Param("ticker") ticker: string) {
     return this.stocksService.getNews(ticker);
+  }
+
+  @ApiOperation({
+    summary: "Signal social independant via Reddit",
+    description:
+      "Collecte et resume les publications sociales publiques. Cet endpoint est volontairement exclu de NewsAgent, RiskAgent, SynthesisAgent et du pipeline LangGraph.",
+  })
+  @ApiParam({ name: "ticker", example: "AAPL", description: "Symbole boursier" })
+  @ApiQuery({ name: "fresh", required: false, type: Boolean })
+  @ApiQuery({ name: "withSlm", required: false, type: Boolean })
+  @ApiOkResponse({ type: SocialMediaResultDto })
+  @Get(":ticker/social-media")
+  getSocialMedia(
+    @Param("ticker") ticker: string,
+    @Query("fresh") fresh?: string,
+    @Query("withSlm") withSlm?: string,
+  ) {
+    return this.stocksService.getSocialMedia(
+      ticker,
+      fresh === "true",
+      withSlm !== "false",
+    );
   }
 
   @ApiOperation({

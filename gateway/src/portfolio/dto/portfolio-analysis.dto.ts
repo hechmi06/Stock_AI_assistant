@@ -41,6 +41,33 @@ class PortfolioTechnicalSnapshotDto {
   @ApiProperty({ enum: ["positive", "negative", "neutral"] }) signal!: string;
 }
 
+class PortfolioFundamentalSnapshotDto {
+  @ApiProperty({ nullable: true }) fiscal_date!: string | null;
+  @ApiProperty({ nullable: true }) market_cap!: number | null;
+  @ApiProperty({ nullable: true }) trailing_pe!: number | null;
+  @ApiProperty({ nullable: true }) forward_pe!: number | null;
+  @ApiProperty({ nullable: true }) price_to_book!: number | null;
+  @ApiProperty({ nullable: true }) peg_ratio!: number | null;
+  @ApiProperty({ nullable: true }) profit_margin_percent!: number | null;
+  @ApiProperty({ nullable: true }) return_on_equity_percent!: number | null;
+  @ApiProperty({ nullable: true }) debt_to_equity!: number | null;
+  @ApiProperty({ nullable: true }) revenue_growth_percent!: number | null;
+  @ApiProperty({ nullable: true }) earnings_growth_percent!: number | null;
+  @ApiProperty({ nullable: true }) total_revenue!: number | null;
+  @ApiProperty({ nullable: true }) net_income!: number | null;
+  @ApiProperty({ nullable: true }) total_debt!: number | null;
+  @ApiProperty({ nullable: true }) operating_cashflow!: number | null;
+  @ApiProperty({ minimum: 0, maximum: 100 }) data_completeness_score!: number;
+}
+
+class PortfolioCompanySnapshotDto {
+  @ApiProperty({ nullable: true }) industry!: string | null;
+  @ApiProperty({ nullable: true }) country!: string | null;
+  @ApiProperty({ nullable: true }) website!: string | null;
+  @ApiProperty({ nullable: true }) exchange!: string | null;
+  @ApiProperty({ nullable: true }) market_cap!: number | null;
+}
+
 class PortfolioPositionDto {
   @ApiProperty({ example: "AAPL" }) ticker!: string;
   @ApiProperty({ example: "Apple Inc.", nullable: true }) name!: string | null;
@@ -60,6 +87,32 @@ class PortfolioPositionDto {
   @ApiProperty({ type: [String] }) sources_used!: string[];
   @ApiProperty({ type: [String] }) warnings!: string[];
   @ApiProperty({ type: PortfolioTechnicalSnapshotDto }) technical!: PortfolioTechnicalSnapshotDto;
+  @ApiProperty({ type: PortfolioFundamentalSnapshotDto })
+  fundamentals!: PortfolioFundamentalSnapshotDto;
+  @ApiProperty({ type: PortfolioCompanySnapshotDto })
+  company!: PortfolioCompanySnapshotDto;
+  @ApiProperty({
+    type: "array",
+    items: {
+      type: "object",
+      properties: {
+        date: { type: "string" },
+        open: { type: "number", nullable: true },
+        high: { type: "number", nullable: true },
+        low: { type: "number", nullable: true },
+        close: { type: "number" },
+        volume: { type: "number", nullable: true },
+      },
+    },
+  })
+  historical_prices!: Array<{
+    date: string;
+    open: number | null;
+    high: number | null;
+    low: number | null;
+    close: number;
+    volume: number | null;
+  }>;
 }
 
 class PortfolioAllocationDto {
@@ -109,6 +162,22 @@ class PortfolioPerformanceDto {
   @ApiProperty({ nullable: true }) jensen_alpha_percent!: number | null;
   @ApiProperty({ nullable: true }) max_drawdown_percent!: number | null;
   @ApiProperty({ nullable: true }) average_correlation!: number | null;
+  @ApiProperty({
+    type: "array",
+    items: {
+      type: "object",
+      properties: {
+        date: { type: "string" },
+        portfolio_return_percent: { type: "number" },
+        benchmark_return_percent: { type: "number" },
+      },
+    },
+  })
+  curve!: Array<{
+    date: string;
+    portfolio_return_percent: number;
+    benchmark_return_percent: number;
+  }>;
 }
 
 class PortfolioTechnicalSummaryDto {

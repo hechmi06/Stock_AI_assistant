@@ -34,7 +34,7 @@ class MarketDataAgent:
     def run(
         self,
         ticker: str,
-        period: str = "6mo",
+        period: str = "1y",
         with_slm: bool = True,
         use_cache: bool = True,
     ) -> MarketDataResult:

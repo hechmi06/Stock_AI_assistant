@@ -11,7 +11,7 @@ import {
   Target,
   WalletCards,
 } from "lucide-react";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { recommendPortfolio } from "../services/analysisApi";
 import type {
   InvestmentObjective,
@@ -19,6 +19,18 @@ import type {
   PortfolioRecommendation as PortfolioRecommendationResult,
   PortfolioRecommendationRequest,
 } from "../types";
+import {
+  DRAFT_TTL_MS,
+  readSnapshot,
+  RECOMMENDATION_TTL_MS,
+  removeSnapshot,
+  snapshotAgeLabel,
+  writeSnapshot,
+} from "../utils/persistedAnalysis";
+import { PortfolioInsights } from "./PortfolioInsights";
+
+const RECOMMENDATION_STORAGE_KEY = "stock-ai-recommendation-analysis-v2";
+const RECOMMENDATION_DRAFT_KEY = "stock-ai-recommendation-draft-v2";
 
 const money = new Intl.NumberFormat("fr-FR", {
   style: "currency",
@@ -37,6 +49,57 @@ const OBJECTIVE_LABELS: Record<InvestmentObjective, string> = {
   balanced: "Equilibre",
   growth: "Croissance",
 };
+
+const DEFAULT_REQUEST: PortfolioRecommendationRequest = {
+  budget: 25_000,
+  risk_profile: "moderate",
+  objective: "balanced",
+  horizon_years: 5,
+  max_positions: 5,
+  cash_reserve_percent: null,
+  benchmark_ticker: "SPY",
+  risk_free_rate_percent: 4,
+  base_currency: "USD",
+  excluded_tickers: [],
+};
+
+type RecommendationSession = {
+  request: PortfolioRecommendationRequest;
+  withSlm: boolean;
+  result: PortfolioRecommendationResult;
+};
+
+type RecommendationDraft = {
+  request: PortfolioRecommendationRequest;
+  withSlm: boolean;
+};
+
+function recommendationFingerprint(
+  request: PortfolioRecommendationRequest,
+  withSlm: boolean,
+) {
+  return JSON.stringify({
+    ...request,
+    excluded_tickers: [...request.excluded_tickers].sort(),
+    withSlm,
+  });
+}
+
+function readInitialRecommendation() {
+  const draft = readSnapshot<RecommendationDraft>(RECOMMENDATION_DRAFT_KEY)?.value;
+  const cached = readSnapshot<RecommendationSession>(RECOMMENDATION_STORAGE_KEY);
+  const request = draft?.request ?? cached?.value.request ?? DEFAULT_REQUEST;
+  const withSlm = draft?.withSlm ?? cached?.value.withSlm ?? true;
+  const cacheMatches =
+    cached
+    && recommendationFingerprint(cached.value.request, cached.value.withSlm)
+      === recommendationFingerprint(request, withSlm);
+  return {
+    request,
+    withSlm,
+    cached: cacheMatches ? cached : null,
+  };
+}
 
 const POTENTIAL_LABELS: Record<string, string> = {
   "Tres eleve": "Très élevé",
@@ -79,49 +142,141 @@ function recommendationLabel(value: string) {
 }
 
 export function PortfolioRecommendation({ onOpenAnalysis }: { onOpenAnalysis: (ticker: string) => void }) {
-  const [budget, setBudget] = useState(25_000);
-  const [riskProfile, setRiskProfile] = useState<InvestorRiskProfile>("moderate");
-  const [objective, setObjective] = useState<InvestmentObjective>("balanced");
-  const [horizonYears, setHorizonYears] = useState(5);
-  const [maxPositions, setMaxPositions] = useState(5);
-  const [cashReserve, setCashReserve] = useState<string>("");
-  const [benchmark, setBenchmark] = useState("SPY");
-  const [riskFreeRate, setRiskFreeRate] = useState(4);
-  const [excludedTickers, setExcludedTickers] = useState("");
-  const [withSlm, setWithSlm] = useState(true);
-  const [result, setResult] = useState<PortfolioRecommendationResult | null>(null);
+  const [initial] = useState(readInitialRecommendation);
+  const [budget, setBudget] = useState(initial.request.budget);
+  const [riskProfile, setRiskProfile] = useState<InvestorRiskProfile>(initial.request.risk_profile);
+  const [objective, setObjective] = useState<InvestmentObjective>(initial.request.objective);
+  const [horizonYears, setHorizonYears] = useState(initial.request.horizon_years);
+  const [maxPositions, setMaxPositions] = useState(initial.request.max_positions);
+  const [cashReserve, setCashReserve] = useState<string>(
+    initial.request.cash_reserve_percent == null
+      ? ""
+      : String(initial.request.cash_reserve_percent),
+  );
+  const [benchmark, setBenchmark] = useState(initial.request.benchmark_ticker);
+  const [riskFreeRate, setRiskFreeRate] = useState(initial.request.risk_free_rate_percent);
+  const [excludedTickers, setExcludedTickers] = useState(
+    initial.request.excluded_tickers.join(", "),
+  );
+  const [withSlm, setWithSlm] = useState(initial.withSlm);
+  const [result, setResult] = useState<PortfolioRecommendationResult | null>(
+    initial.cached?.value.result ?? null,
+  );
+  const [selectedRecommendedTicker, setSelectedRecommendedTicker] = useState("");
+  const [savedAt, setSavedAt] = useState<number | null>(
+    initial.cached?.savedAt ?? null,
+  );
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const insightsRef = useRef<HTMLDivElement>(null);
+  const initialized = useRef(false);
+  const skipInitialDraftEffect = useRef(true);
 
   const selectedTickers = useMemo(
     () => new Set(result?.allocations.map((item) => item.ticker) ?? []),
     [result],
   );
+  const request = useMemo<PortfolioRecommendationRequest>(() => ({
+    budget,
+    risk_profile: riskProfile,
+    objective,
+    horizon_years: Math.max(1, Math.min(30, horizonYears)),
+    max_positions: Math.max(3, Math.min(8, maxPositions)),
+    cash_reserve_percent: cashReserve.trim() === ""
+      ? null
+      : Math.max(0, Math.min(50, Number(cashReserve))),
+    benchmark_ticker: benchmark.trim().toUpperCase() || "SPY",
+    risk_free_rate_percent: riskFreeRate,
+    base_currency: "USD",
+    excluded_tickers: excludedTickers
+      .split(/[,;\s]+/)
+      .map((ticker) => ticker.trim().toUpperCase())
+      .filter(Boolean),
+  }), [
+    benchmark,
+    budget,
+    cashReserve,
+    excludedTickers,
+    horizonYears,
+    maxPositions,
+    objective,
+    riskFreeRate,
+    riskProfile,
+  ]);
+
+  useEffect(() => {
+    const firstTicker = result?.allocations[0]?.ticker ?? "";
+    if (!result?.allocations.some((item) => item.ticker === selectedRecommendedTicker)) {
+      setSelectedRecommendedTicker(firstTicker);
+    }
+  }, [result, selectedRecommendedTicker]);
+
+  useEffect(() => {
+    writeSnapshot<RecommendationDraft>(
+      RECOMMENDATION_DRAFT_KEY,
+      { request, withSlm },
+      DRAFT_TTL_MS,
+    );
+    if (skipInitialDraftEffect.current) {
+      skipInitialDraftEffect.current = false;
+      return;
+    }
+    if (
+      result
+      && recommendationFingerprint(result.profile, withSlm)
+        !== recommendationFingerprint(request, withSlm)
+    ) {
+      setResult(null);
+      setSavedAt(null);
+      removeSnapshot(RECOMMENDATION_STORAGE_KEY);
+    }
+  }, [request, result, withSlm]);
+
+  useEffect(() => {
+    if (initialized.current) return;
+    initialized.current = true;
+    if (initial.cached?.isExpired) {
+      void generate(true);
+    }
+    // A fresh matching recommendation is restored without another API call.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  useEffect(() => {
+    if (!savedAt || !result) return;
+    const remaining = savedAt + RECOMMENDATION_TTL_MS - Date.now();
+    const timer = window.setTimeout(
+      () => void generate(true),
+      Math.max(0, remaining),
+    );
+    return () => window.clearTimeout(timer);
+    // New recommendations update savedAt and replace this timer.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [result, savedAt]);
+
+  function selectRecommendedPosition(ticker: string) {
+    setSelectedRecommendedTicker(ticker);
+    requestAnimationFrame(() => {
+      insightsRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
+    });
+  }
 
   async function generate(fresh = false) {
-    if (budget <= 0) {
+    if (request.budget <= 0) {
       setError("Le budget doit etre superieur a zero.");
       return;
     }
-    const request: PortfolioRecommendationRequest = {
-      budget,
-      risk_profile: riskProfile,
-      objective,
-      horizon_years: Math.max(1, Math.min(30, horizonYears)),
-      max_positions: Math.max(3, Math.min(8, maxPositions)),
-      cash_reserve_percent: cashReserve.trim() === "" ? null : Math.max(0, Math.min(50, Number(cashReserve))),
-      benchmark_ticker: benchmark.trim().toUpperCase() || "SPY",
-      risk_free_rate_percent: riskFreeRate,
-      base_currency: "USD",
-      excluded_tickers: excludedTickers
-        .split(/[,;\s]+/)
-        .map((ticker) => ticker.trim().toUpperCase())
-        .filter(Boolean),
-    };
     setLoading(true);
     setError(null);
     try {
-      setResult(await recommendPortfolio(request, fresh, withSlm));
+      const nextResult = await recommendPortfolio(request, fresh, withSlm);
+      setResult(nextResult);
+      const snapshot = writeSnapshot<RecommendationSession>(
+        RECOMMENDATION_STORAGE_KEY,
+        { request, withSlm, result: nextResult },
+        RECOMMENDATION_TTL_MS,
+      );
+      setSavedAt(snapshot?.savedAt ?? Date.now());
     } catch (requestError) {
       setError(requestError instanceof Error ? requestError.message : "Recommandation indisponible.");
     } finally {
@@ -141,9 +296,14 @@ export function PortfolioRecommendation({ onOpenAnalysis }: { onOpenAnalysis: (t
           <p>Composition simulee selon votre profil et les analyses multi-agents.</p>
         </div>
         {result ? (
-          <button type="button" onClick={() => void generate(true)} disabled={loading} title="Actualiser les sources">
-            <RefreshCw size={16} className={loading ? "spin" : ""} /> Actualiser
-          </button>
+          <div className="recommendation-head-actions">
+            <span className={`analysis-freshness ${loading ? "refreshing" : ""}`}>
+              {loading ? "Actualisation en cours" : snapshotAgeLabel(savedAt)}
+            </span>
+            <button type="button" onClick={() => void generate(true)} disabled={loading} title="Actualiser les sources">
+              <RefreshCw size={16} className={loading ? "spin" : ""} /> Actualiser
+            </button>
+          </div>
         ) : null}
       </header>
 
@@ -266,7 +426,13 @@ export function PortfolioRecommendation({ onOpenAnalysis }: { onOpenAnalysis: (t
                 <span>Entreprise</span><span>Secteur</span><span>Poids</span><span>Montant</span><span>Quantite</span><span>Potentiel</span><span>Role et these</span>
               </div>
               {result.allocations.map((item) => (
-                <button type="button" className="recommendation-allocation-row" key={item.ticker} onClick={() => onOpenAnalysis(item.ticker)}>
+                <button
+                  type="button"
+                  className={`recommendation-allocation-row ${selectedRecommendedTicker === item.ticker ? "selected" : ""}`}
+                  key={item.ticker}
+                  aria-pressed={selectedRecommendedTicker === item.ticker}
+                  onClick={() => selectRecommendedPosition(item.ticker)}
+                >
                   <span><strong>{item.ticker}</strong><small>{item.name}</small></span>
                   <span>{item.sector}</span>
                   <span><strong>{number.format(item.weight)}%</strong><i><b style={{ width: `${item.weight}%` }} /></i></span>
@@ -283,6 +449,19 @@ export function PortfolioRecommendation({ onOpenAnalysis }: { onOpenAnalysis: (t
               </div>
             </div>
           </section>
+
+          {result.portfolio_analysis ? (
+            <div ref={insightsRef} className="recommendation-portfolio-insights">
+              <PortfolioInsights
+                analysis={result.portfolio_analysis.portfolio}
+                individualAnalyses={result.portfolio_analysis.individual_analyses}
+                onOpenAnalysis={onOpenAnalysis}
+                selectedTicker={selectedRecommendedTicker}
+                onSelectedTickerChange={setSelectedRecommendedTicker}
+                title="Analyse financiere de la recommandation"
+              />
+            </div>
+          ) : null}
 
           <div className="recommendation-analysis-grid">
             <section>

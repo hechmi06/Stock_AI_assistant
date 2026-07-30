@@ -1,5 +1,5 @@
 from datetime import datetime
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
@@ -7,6 +7,30 @@ from pydantic import BaseModel, Field
 MarketDataStatus = Literal["success", "partial", "failed"]
 MarketDataSource = Literal["twelve_data", "yfinance", "alpha_vantage", "financial_modeling_prep", "tiingo"]
 PriceSource = Literal["twelve_data", "yfinance", "alpha_vantage", "financial_modeling_prep", "fallback"]
+PointInTimeMode = Literal["observed", "reconstructed", "derived"]
+
+
+class EducationMessage(BaseModel):
+    role: Literal["user", "assistant"]
+    content: str = Field(min_length=1, max_length=2500)
+
+
+class EducationChatRequest(BaseModel):
+    message: str = Field(min_length=2, max_length=1200)
+    history: list[EducationMessage] = Field(default_factory=list, max_length=10)
+    page: str | None = Field(default=None, max_length=40)
+    ticker: str | None = Field(default=None, max_length=15)
+
+
+class EducationChatResponse(BaseModel):
+    status: Literal["success", "partial"]
+    answer: str
+    concepts: list[str] = Field(default_factory=list, max_length=8)
+    suggested_questions: list[str] = Field(default_factory=list, max_length=4)
+    provider: str
+    model: str | None = None
+    educational_only: bool = True
+    warning: str | None = None
 
 
 class PriceQuote(BaseModel):
@@ -57,6 +81,43 @@ class SlmSummary(BaseModel):
     warnings: list[str] = Field(default_factory=list)
 
 
+class PointInTimeEvent(BaseModel):
+    id: str
+    ticker: str
+    component: str
+    event_type: str
+    effective_at: str
+    available_at: str
+    observed_at: str
+    source: str
+    quality: MarketDataStatus
+    knowledge_mode: PointInTimeMode
+    schema_version: int = 1
+    payload_hash: str
+    run_id: str | None = None
+    payload: dict[str, Any] = Field(default_factory=dict)
+
+
+class PointInTimeQueryResult(BaseModel):
+    ticker: str
+    as_of: str | None = None
+    component: str | None = None
+    event_type: str | None = None
+    observed_only: bool = False
+    count: int = 0
+    events: list[PointInTimeEvent] = Field(default_factory=list)
+
+
+class PointInTimeSummary(BaseModel):
+    ticker: str
+    total_events: int = 0
+    components: dict[str, int] = Field(default_factory=dict)
+    event_types: dict[str, int] = Field(default_factory=dict)
+    knowledge_modes: dict[str, int] = Field(default_factory=dict)
+    first_available_at: str | None = None
+    last_observed_at: str | None = None
+
+
 TrendDirection = Literal["bullish", "bearish", "neutral"]
 TechnicalSignal = Literal["positive", "negative", "neutral"]
 
@@ -64,6 +125,22 @@ TechnicalSignal = Literal["positive", "negative", "neutral"]
 class MovingAverages(BaseModel):
     sma_20: float | None = None
     sma_50: float | None = None
+    ema_20: float | None = None
+    ema_50: float | None = None
+    ema_200: float | None = None
+
+
+class MacdIndicator(BaseModel):
+    macd: float | None = None
+    signal: float | None = None
+    histogram: float | None = None
+
+
+class BollingerBands(BaseModel):
+    upper: float | None = None
+    middle: float | None = None
+    lower: float | None = None
+    position_percent: float | None = None
 
 
 class VolumeAnalysis(BaseModel):
@@ -79,6 +156,10 @@ class TechnicalResult(BaseModel):
     sources_used: list[MarketDataSource] = Field(default_factory=list)
     rsi: float | None = None
     moving_averages: MovingAverages = Field(default_factory=MovingAverages)
+    macd: MacdIndicator = Field(default_factory=MacdIndicator)
+    atr_14: float | None = None
+    atr_percent: float | None = None
+    bollinger_bands: BollingerBands = Field(default_factory=BollingerBands)
     volatility: float | None = None
     trend: TrendDirection = "neutral"
     support_level: float | None = None
@@ -88,6 +169,158 @@ class TechnicalResult(BaseModel):
     signal: TechnicalSignal = "neutral"
     errors: list[str] = Field(default_factory=list)
     slm_summary: SlmSummary | None = None
+
+
+class BacktestObservation(BaseModel):
+    signal_date: str
+    exit_date: str
+    technical_score: int
+    signal: TechnicalSignal
+    entry_price: float
+    exit_price: float
+    forward_return_percent: float
+    strategy_return_percent: float
+    benchmark_return_percent: float
+    execution_cost_percent: float = 0.0
+    cumulative_strategy_percent: float
+    cumulative_ticker_percent: float
+    cumulative_benchmark_percent: float
+    feature_signals: dict[str, float] = Field(default_factory=dict)
+
+
+class BacktestCalibrationBucket(BaseModel):
+    label: str
+    score_min: int = Field(ge=0, le=100)
+    score_max: int = Field(ge=0, le=100)
+    observations: int = Field(default=0, ge=0)
+    average_forward_return_percent: float | None = None
+    positive_return_rate_percent: float | None = None
+
+
+class BacktestMetrics(BaseModel):
+    strategy_return_percent: float = 0.0
+    ticker_buy_hold_return_percent: float = 0.0
+    benchmark_return_percent: float = 0.0
+    excess_return_percent: float = 0.0
+    annualized_return_percent: float = 0.0
+    annualized_volatility_percent: float = 0.0
+    sharpe_ratio: float | None = None
+    max_drawdown_percent: float = 0.0
+    average_trade_return_percent: float = 0.0
+    directional_accuracy_percent: float | None = None
+    invested_win_rate_percent: float | None = None
+    mean_return_ci_95_low_percent: float | None = None
+    mean_return_ci_95_high_percent: float | None = None
+
+
+class QualificationCheck(BaseModel):
+    name: str
+    passed: bool
+    actual: float | int | str | None = None
+    threshold: str
+
+
+class BacktestResult(BaseModel):
+    ticker: str
+    benchmark: str
+    status: MarketDataStatus
+    methodology: Literal["walk_forward_long_cash"] = "walk_forward_long_cash"
+    period: str
+    horizon_days: int = Field(ge=1, le=252)
+    min_history: int = Field(ge=50, le=500)
+    transaction_cost_bps: float = Field(default=5.0, ge=0, le=200)
+    slippage_bps: float = Field(default=5.0, ge=0, le=200)
+    period_start: str | None = None
+    period_end: str | None = None
+    history_points: int = 0
+    evaluation_count: int = 0
+    signal_counts: dict[str, int] = Field(default_factory=dict)
+    reliability_level: Literal["low", "medium", "high"] = "low"
+    verdict: Literal["validated", "recalibrate", "not_validated", "insufficient"] = "insufficient"
+    lookahead_guard: bool = True
+    qualification_checks: list[QualificationCheck] = Field(default_factory=list)
+    metrics: BacktestMetrics = Field(default_factory=BacktestMetrics)
+    calibration: list[BacktestCalibrationBucket] = Field(default_factory=list)
+    observations: list[BacktestObservation] = Field(default_factory=list)
+    excluded_components: list[str] = Field(default_factory=list)
+    warnings: list[str] = Field(default_factory=list)
+    errors: list[str] = Field(default_factory=list)
+
+
+class CalibrationSplitMetrics(BaseModel):
+    observations: int = 0
+    invested_trades: int = 0
+    average_strategy_return_percent: float = 0.0
+    average_benchmark_return_percent: float = 0.0
+    average_excess_return_percent: float = 0.0
+    annualized_sharpe_ratio: float | None = None
+    win_rate_percent: float | None = None
+    mean_return_ci_95_low_percent: float | None = None
+    mean_return_ci_95_high_percent: float | None = None
+
+
+class TechnicalFeatureDiagnostic(BaseModel):
+    name: str
+    label: str
+    train_information_coefficient: float | None = None
+    validation_information_coefficient: float | None = None
+    test_information_coefficient: float | None = None
+    train_coverage_percent: float = 0.0
+    selected: bool = False
+    rejection_reason: str | None = None
+    weight: float = 0.0
+
+
+class TechnicalFeatureModel(BaseModel):
+    status: Literal["candidate", "rejected", "insufficient"] = "insufficient"
+    production_eligible: bool = False
+    selected_features: list[str] = Field(default_factory=list)
+    weights: dict[str, float] = Field(default_factory=dict)
+    selected_threshold: int = 65
+    train: CalibrationSplitMetrics = Field(default_factory=CalibrationSplitMetrics)
+    validation: CalibrationSplitMetrics = Field(default_factory=CalibrationSplitMetrics)
+    test: CalibrationSplitMetrics = Field(default_factory=CalibrationSplitMetrics)
+    baseline_test: CalibrationSplitMetrics = Field(default_factory=CalibrationSplitMetrics)
+    test_excess_uplift_percent: float = 0.0
+    diagnostics: list[TechnicalFeatureDiagnostic] = Field(default_factory=list)
+    checks: list[QualificationCheck] = Field(default_factory=list)
+    notes: list[str] = Field(default_factory=list)
+
+
+class CalibrationHorizonResult(BaseModel):
+    horizon_days: int
+    selected_threshold: int
+    train: CalibrationSplitMetrics = Field(default_factory=CalibrationSplitMetrics)
+    validation: CalibrationSplitMetrics = Field(default_factory=CalibrationSplitMetrics)
+    test: CalibrationSplitMetrics = Field(default_factory=CalibrationSplitMetrics)
+    verdict: Literal["validated", "promising", "not_validated", "insufficient"]
+    checks: list[QualificationCheck] = Field(default_factory=list)
+    feature_model: TechnicalFeatureModel = Field(default_factory=TechnicalFeatureModel)
+
+
+class CalibrationTickerCoverage(BaseModel):
+    ticker: str
+    status: MarketDataStatus
+    observations_by_horizon: dict[str, int] = Field(default_factory=dict)
+    error: str | None = None
+
+
+class TechnicalCalibrationResult(BaseModel):
+    status: MarketDataStatus
+    benchmark: str
+    period: str
+    tickers_requested: list[str]
+    tickers_completed: list[str] = Field(default_factory=list)
+    horizons: list[int]
+    transaction_cost_bps: float
+    slippage_bps: float
+    split: dict[str, float] = Field(default_factory=dict)
+    methodology: Literal["chronological_train_validation_test"] = "chronological_train_validation_test"
+    overall_verdict: Literal["validated", "promising", "not_validated", "insufficient"] = "insufficient"
+    horizon_results: list[CalibrationHorizonResult] = Field(default_factory=list)
+    coverage: list[CalibrationTickerCoverage] = Field(default_factory=list)
+    warnings: list[str] = Field(default_factory=list)
+    errors: list[str] = Field(default_factory=list)
 
 
 NewsSentiment = Literal["positive", "negative", "neutral", "mixed"]
@@ -119,6 +352,48 @@ class NewsResult(BaseModel):
     sentiment_label: NewsSentiment | None = None
     sentiment_score: float | None = Field(default=None, ge=-1.0, le=1.0)
     key_events: list[str] = Field(default_factory=list)
+    warnings: list[str] = Field(default_factory=list)
+    errors: list[str] = Field(default_factory=list)
+    slm_summary: SlmSummary | None = None
+
+
+SocialSource = Literal["reddit"]
+SocialSourceState = Literal["success", "empty", "unavailable", "failed"]
+
+
+class SocialEngagement(BaseModel):
+    score: int | None = None
+    comments: int | None = None
+
+
+class SocialPost(BaseModel):
+    id: str
+    source: SocialSource
+    author: str
+    text: str
+    url: str
+    published_at: str
+    engagement: SocialEngagement = Field(default_factory=SocialEngagement)
+    sentiment: NewsSentiment | None = None
+
+
+class SocialSourceStatus(BaseModel):
+    status: SocialSourceState
+    posts_count: int = Field(default=0, ge=0)
+    error: str | None = None
+
+
+class SocialMediaResult(BaseModel):
+    ticker: str
+    status: MarketDataStatus
+    collected_at: datetime | None = None
+    posts: list[SocialPost] = Field(default_factory=list)
+    sources_used: list[SocialSource] = Field(default_factory=list)
+    source_status: dict[SocialSource, SocialSourceStatus] = Field(default_factory=dict)
+    sentiment_label: NewsSentiment | None = None
+    sentiment_score: float | None = Field(default=None, ge=-1.0, le=1.0)
+    themes: list[str] = Field(default_factory=list)
+    summary: str | None = None
     warnings: list[str] = Field(default_factory=list)
     errors: list[str] = Field(default_factory=list)
     slm_summary: SlmSummary | None = None
@@ -259,6 +534,35 @@ class SynthesisResult(BaseModel):
     slm_summary: SlmSummary | None = None
 
 
+class HistoricalReplayTrace(BaseModel):
+    component: str
+    status: MarketDataStatus
+    event_ids: list[str] = Field(default_factory=list)
+    event_count: int = 0
+    latest_available_at: str | None = None
+    knowledge_modes: list[PointInTimeMode] = Field(default_factory=list)
+    message: str = ""
+
+
+class HistoricalReplayResult(BaseModel):
+    ticker: str
+    status: MarketDataStatus
+    as_of: str
+    replay_mode: Literal["strict", "research"] = "strict"
+    allow_reconstructed_prices: bool = False
+    lookahead_guard_passed: bool = True
+    archive_coverage_score: int = Field(default=0, ge=0, le=100)
+    trace: list[HistoricalReplayTrace] = Field(default_factory=list)
+    market_data: MarketDataResult
+    technical: TechnicalResult
+    news: NewsResult
+    rag: RagResult
+    risk: RiskResult
+    synthesis: SynthesisResult
+    warnings: list[str] = Field(default_factory=list)
+    errors: list[str] = Field(default_factory=list)
+
+
 class AgentExecution(BaseModel):
     agent: str
     status: MarketDataStatus
@@ -309,6 +613,33 @@ class PortfolioTechnicalSnapshot(BaseModel):
     signal: TechnicalSignal = "neutral"
 
 
+class PortfolioFundamentalSnapshot(BaseModel):
+    fiscal_date: str | None = None
+    market_cap: float | None = None
+    trailing_pe: float | None = None
+    forward_pe: float | None = None
+    price_to_book: float | None = None
+    peg_ratio: float | None = None
+    profit_margin_percent: float | None = None
+    return_on_equity_percent: float | None = None
+    debt_to_equity: float | None = None
+    revenue_growth_percent: float | None = None
+    earnings_growth_percent: float | None = None
+    total_revenue: float | None = None
+    net_income: float | None = None
+    total_debt: float | None = None
+    operating_cashflow: float | None = None
+    data_completeness_score: int = Field(default=0, ge=0, le=100)
+
+
+class PortfolioCompanySnapshot(BaseModel):
+    industry: str | None = None
+    country: str | None = None
+    website: str | None = None
+    exchange: str | None = None
+    market_cap: float | None = None
+
+
 class PortfolioPositionResult(BaseModel):
     ticker: str
     name: str | None = None
@@ -328,6 +659,11 @@ class PortfolioPositionResult(BaseModel):
     sources_used: list[MarketDataSource] = Field(default_factory=list)
     warnings: list[str] = Field(default_factory=list)
     technical: PortfolioTechnicalSnapshot = Field(default_factory=PortfolioTechnicalSnapshot)
+    fundamentals: PortfolioFundamentalSnapshot = Field(
+        default_factory=PortfolioFundamentalSnapshot
+    )
+    company: PortfolioCompanySnapshot = Field(default_factory=PortfolioCompanySnapshot)
+    historical_prices: list[HistoricalPrice] = Field(default_factory=list)
 
 
 class PortfolioAllocation(BaseModel):
@@ -366,6 +702,12 @@ class PortfolioCorrelation(BaseModel):
     correlation: float = Field(ge=-1, le=1)
 
 
+class PortfolioPerformancePoint(BaseModel):
+    date: str
+    portfolio_return_percent: float
+    benchmark_return_percent: float
+
+
 class PortfolioPerformanceMetrics(BaseModel):
     benchmark_ticker: str = "SPY"
     observation_count: int = Field(default=0, ge=0)
@@ -383,6 +725,7 @@ class PortfolioPerformanceMetrics(BaseModel):
     jensen_alpha_percent: float | None = None
     max_drawdown_percent: float | None = None
     average_correlation: float | None = None
+    curve: list[PortfolioPerformancePoint] = Field(default_factory=list)
 
 
 class PortfolioTechnicalSummary(BaseModel):

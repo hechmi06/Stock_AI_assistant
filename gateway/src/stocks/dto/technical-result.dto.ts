@@ -6,6 +6,40 @@ class MovingAveragesDto {
 
   @ApiProperty({ example: 371.8, nullable: true })
   sma_50!: number | null;
+
+  @ApiProperty({ example: 384.6, nullable: true })
+  ema_20!: number | null;
+
+  @ApiProperty({ example: 372.4, nullable: true })
+  ema_50!: number | null;
+
+  @ApiProperty({ example: 341.8, nullable: true })
+  ema_200!: number | null;
+}
+
+class MacdIndicatorDto {
+  @ApiProperty({ example: 2.14, nullable: true })
+  macd!: number | null;
+
+  @ApiProperty({ example: 1.82, nullable: true })
+  signal!: number | null;
+
+  @ApiProperty({ example: 0.32, nullable: true })
+  histogram!: number | null;
+}
+
+class BollingerBandsDto {
+  @ApiProperty({ example: 405.2, nullable: true })
+  upper!: number | null;
+
+  @ApiProperty({ example: 386.1, nullable: true })
+  middle!: number | null;
+
+  @ApiProperty({ example: 367.0, nullable: true })
+  lower!: number | null;
+
+  @ApiProperty({ example: 72.4, nullable: true })
+  position_percent!: number | null;
 }
 
 class TechnicalSlmSummaryDto {
@@ -61,6 +95,18 @@ export class TechnicalResultDto {
 
   @ApiProperty({ type: MovingAveragesDto })
   moving_averages!: MovingAveragesDto;
+
+  @ApiProperty({ type: MacdIndicatorDto })
+  macd!: MacdIndicatorDto;
+
+  @ApiProperty({ example: 6.4, nullable: true })
+  atr_14!: number | null;
+
+  @ApiProperty({ example: 1.65, nullable: true })
+  atr_percent!: number | null;
+
+  @ApiProperty({ type: BollingerBandsDto })
+  bollinger_bands!: BollingerBandsDto;
 
   @ApiProperty({ example: 1.9, nullable: true, description: "Ecart type des rendements quotidiens (%)" })
   volatility!: number | null;

@@ -9,7 +9,8 @@ import type {
 
 @Injectable()
 export class PortfolioService {
-  private readonly aiBackendUrl = process.env.AI_BACKEND_URL ?? "http://localhost:8000";
+  private readonly aiBackendUrl =
+    process.env.AI_BACKEND_URL ?? "http://127.0.0.1:8000";
 
   async analyze(
     request: PortfolioAnalysisRequestDto,

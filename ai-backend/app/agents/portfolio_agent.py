@@ -14,9 +14,12 @@ from .schemas import (
     PortfolioAllocation,
     PortfolioAnalysisRequest,
     PortfolioAnalysisResult,
+    PortfolioCompanySnapshot,
     PortfolioCorrelation,
+    PortfolioFundamentalSnapshot,
     PortfolioHoldingInput,
     PortfolioPerformanceMetrics,
+    PortfolioPerformancePoint,
     PortfolioPositionResult,
     PortfolioRiskSummary,
     PortfolioSummary,
@@ -201,6 +204,11 @@ class PortfolioAgent:
                 data_status="failed",
                 warnings=list(errors),
                 technical=self._technical_snapshot(technical),
+                fundamentals=self._fundamental_snapshot(market_data),
+                company=self._company_snapshot(market_data),
+                historical_prices=(
+                    list(market_data.historical_prices) if market_data else []
+                ),
             )
 
         market_value = holding.quantity * market_data.price
@@ -228,6 +236,9 @@ class PortfolioAgent:
             sources_used=market_data.sources_used,
             warnings=[*market_data.warnings, *market_data.errors],
             technical=self._technical_snapshot(technical),
+            fundamentals=self._fundamental_snapshot(market_data),
+            company=self._company_snapshot(market_data),
+            historical_prices=list(market_data.historical_prices),
         )
 
     def _risk_summary(
@@ -404,6 +415,7 @@ class PortfolioAgent:
             if correlations
             else None
         )
+        curve = self._performance_curve(dates, portfolio_returns, benchmark_returns)
         metrics = PortfolioPerformanceMetrics(
             benchmark_ticker=benchmark_ticker,
             observation_count=len(portfolio_returns),
@@ -435,6 +447,7 @@ class PortfolioAgent:
                 if average_correlation is not None
                 else None
             ),
+            curve=curve,
         )
         return metrics, correlations, warnings
 
@@ -495,6 +508,94 @@ class PortfolioAgent:
             signal=technical.signal,
         )
 
+    @classmethod
+    def _fundamental_snapshot(
+        cls,
+        market_data: MarketDataResult | None,
+    ) -> PortfolioFundamentalSnapshot:
+        if market_data is None:
+            return PortfolioFundamentalSnapshot()
+
+        ratios = {
+            key.lower(): value
+            for key, value in market_data.financial_ratios.items()
+        }
+        statements = market_data.financial_statements_summary
+        values = {
+            "market_cap": market_data.company_profile.market_cap,
+            "trailing_pe": ratios.get("trailing_pe"),
+            "forward_pe": ratios.get("forward_pe"),
+            "price_to_book": ratios.get("price_to_book"),
+            "peg_ratio": ratios.get("peg_ratio"),
+            "profit_margin_percent": cls._ratio_percent(
+                ratios.get("profit_margin")
+            ),
+            "return_on_equity_percent": cls._ratio_percent(
+                ratios.get("return_on_equity")
+            ),
+            "debt_to_equity": ratios.get("debt_to_equity"),
+            "revenue_growth_percent": cls._ratio_percent(
+                ratios.get("revenue_growth")
+            ),
+            "earnings_growth_percent": cls._ratio_percent(
+                ratios.get("earnings_growth")
+            ),
+            "total_revenue": statements.total_revenue,
+            "net_income": statements.net_income,
+            "total_debt": statements.total_debt,
+            "operating_cashflow": statements.operating_cashflow,
+        }
+        available = sum(
+            isinstance(value, (int, float)) for value in values.values()
+        )
+        return PortfolioFundamentalSnapshot(
+            fiscal_date=statements.fiscal_date,
+            data_completeness_score=round(available / len(values) * 100),
+            **values,
+        )
+
+    @staticmethod
+    def _company_snapshot(
+        market_data: MarketDataResult | None,
+    ) -> PortfolioCompanySnapshot:
+        if market_data is None:
+            return PortfolioCompanySnapshot()
+        profile = market_data.company_profile
+        return PortfolioCompanySnapshot(
+            industry=profile.industry,
+            country=profile.country,
+            website=profile.website,
+            exchange=profile.exchange,
+            market_cap=profile.market_cap,
+        )
+
+    @staticmethod
+    def _performance_curve(
+        dates: list[str],
+        portfolio_returns: list[float],
+        benchmark_returns: list[float],
+    ) -> list[PortfolioPerformancePoint]:
+        portfolio_value = 1.0
+        benchmark_value = 1.0
+        curve = [
+            PortfolioPerformancePoint(
+                date=dates[0],
+                portfolio_return_percent=0,
+                benchmark_return_percent=0,
+            )
+        ]
+        for index, date in enumerate(dates[1:]):
+            portfolio_value *= 1 + portfolio_returns[index]
+            benchmark_value *= 1 + benchmark_returns[index]
+            curve.append(
+                PortfolioPerformancePoint(
+                    date=date,
+                    portfolio_return_percent=round((portfolio_value - 1) * 100, 3),
+                    benchmark_return_percent=round((benchmark_value - 1) * 100, 3),
+                )
+            )
+        return curve
+
     @staticmethod
     def _daily_returns(series: dict[str, float], dates: list[str]) -> list[float]:
         return [
@@ -539,6 +640,15 @@ class PortfolioAgent:
     @staticmethod
     def _rounded_percent(value: float | None) -> float | None:
         return round(value * 100, 2) if value is not None else None
+
+    @staticmethod
+    def _ratio_percent(value: float | None) -> float | None:
+        if not isinstance(value, (int, float)):
+            return None
+        # Les fournisseurs utilises (yfinance, Alpha Vantage et FMP) exposent
+        # marge, ROE et croissance sous forme de ratio, y compris au-dessus de
+        # 1 pour un ROE superieur a 100 %.
+        return round(value * 100, 2)
 
     def _holding_allocation(
         self,

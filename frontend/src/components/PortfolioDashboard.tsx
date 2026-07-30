@@ -11,11 +11,20 @@ import {
   Sparkles,
   Trash2,
 } from "lucide-react";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { analyzeCompletePortfolio, analyzePortfolio } from "../services/analysisApi";
 import type { PortfolioAnalysis, PortfolioCompleteAnalysis, PortfolioHolding, PortfolioVerdict } from "../types";
+import {
+  DRAFT_TTL_MS,
+  PORTFOLIO_TTL_MS,
+  readSnapshot,
+  snapshotAgeLabel,
+  writeSnapshot,
+} from "../utils/persistedAnalysis";
+import { PortfolioInsights } from "./PortfolioInsights";
 
 const STORAGE_KEY = "stock-ai-portfolio-v1";
+const ANALYSIS_STORAGE_KEY = "stock-ai-portfolio-analysis-v2";
 const DEFAULT_HOLDINGS: PortfolioHolding[] = [
   { ticker: "AAPL", quantity: 20, average_cost: 190 },
   { ticker: "MSFT", quantity: 10, average_cost: 380 },
@@ -36,9 +45,43 @@ type SavedPortfolio = {
   riskFreeRatePercent: number;
 };
 
+type SavedPortfolioAnalysis = {
+  fingerprint: string;
+  analysis: PortfolioAnalysis;
+  completeAnalysis: PortfolioCompleteAnalysis | null;
+};
+
+type InitialPortfolioState = SavedPortfolio & {
+  restoredAnalysis: PortfolioAnalysis | null;
+  restoredCompleteAnalysis: PortfolioCompleteAnalysis | null;
+  restoredSavedAt: number | null;
+  restoredExpired: boolean;
+};
+
+function portfolioFingerprint(portfolio: SavedPortfolio) {
+  return JSON.stringify({
+    holdings: portfolio.holdings
+      .filter((holding) => holding.ticker.trim() && holding.quantity > 0)
+      .map((holding) => ({
+        ticker: holding.ticker.trim().toUpperCase(),
+        quantity: Number(holding.quantity),
+        average_cost: Number(holding.average_cost),
+      })),
+    cash: Number(portfolio.cash),
+    benchmarkTicker: portfolio.benchmarkTicker.trim().toUpperCase() || "SPY",
+    riskFreeRatePercent: Number(portfolio.riskFreeRatePercent),
+  });
+}
+
 function readSavedPortfolio(): SavedPortfolio {
   try {
-    const saved = JSON.parse(localStorage.getItem(STORAGE_KEY) ?? "null") as SavedPortfolio | null;
+    const raw = JSON.parse(localStorage.getItem(STORAGE_KEY) ?? "null") as
+      | SavedPortfolio
+      | { version?: number; value?: SavedPortfolio }
+      | null;
+    const saved = raw && "version" in raw
+      ? readSnapshot<SavedPortfolio>(STORAGE_KEY)?.value
+      : raw as SavedPortfolio | null;
     if (saved?.holdings?.length) {
       return {
         holdings: saved.holdings,
@@ -57,6 +100,22 @@ function readSavedPortfolio(): SavedPortfolio {
     cash: 5000,
     benchmarkTicker: "SPY",
     riskFreeRatePercent: 4,
+  };
+}
+
+function readInitialPortfolioState(): InitialPortfolioState {
+  const portfolio = readSavedPortfolio();
+  const cached = readSnapshot<SavedPortfolioAnalysis>(ANALYSIS_STORAGE_KEY);
+  const matchesCurrentPortfolio =
+    cached?.value.fingerprint === portfolioFingerprint(portfolio);
+  return {
+    ...portfolio,
+    restoredAnalysis: matchesCurrentPortfolio ? cached?.value.analysis ?? null : null,
+    restoredCompleteAnalysis: matchesCurrentPortfolio
+      ? cached?.value.completeAnalysis ?? null
+      : null,
+    restoredSavedAt: matchesCurrentPortfolio ? cached?.savedAt ?? null : null,
+    restoredExpired: matchesCurrentPortfolio ? cached?.isExpired ?? false : false,
   };
 }
 
@@ -86,27 +145,65 @@ function verdictLabel(value: PortfolioVerdict) {
 }
 
 export function PortfolioDashboard({ onOpenAnalysis }: { onOpenAnalysis: (ticker: string) => void }) {
-  const initial = readSavedPortfolio();
+  const [initial] = useState(readInitialPortfolioState);
   const [holdings, setHoldings] = useState<PortfolioHolding[]>(initial.holdings);
   const [cash, setCash] = useState(initial.cash);
   const [benchmarkTicker, setBenchmarkTicker] = useState(initial.benchmarkTicker);
   const [riskFreeRatePercent, setRiskFreeRatePercent] = useState(initial.riskFreeRatePercent);
-  const [analysis, setAnalysis] = useState<PortfolioAnalysis | null>(null);
-  const [completeAnalysis, setCompleteAnalysis] = useState<PortfolioCompleteAnalysis | null>(null);
+  const [analysis, setAnalysis] = useState<PortfolioAnalysis | null>(
+    initial.restoredAnalysis,
+  );
+  const [completeAnalysis, setCompleteAnalysis] = useState<PortfolioCompleteAnalysis | null>(
+    initial.restoredCompleteAnalysis,
+  );
+  const [savedAt, setSavedAt] = useState<number | null>(initial.restoredSavedAt);
   const [loading, setLoading] = useState(false);
   const [completeLoading, setCompleteLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const skipInitialInvalidation = useRef(true);
+  const initialized = useRef(false);
 
   useEffect(() => {
-    localStorage.setItem(
+    writeSnapshot(
       STORAGE_KEY,
-      JSON.stringify({ holdings, cash, benchmarkTicker, riskFreeRatePercent }),
+      { holdings, cash, benchmarkTicker, riskFreeRatePercent },
+      DRAFT_TTL_MS,
     );
   }, [holdings, cash, benchmarkTicker, riskFreeRatePercent]);
 
   useEffect(() => {
+    if (skipInitialInvalidation.current) {
+      skipInitialInvalidation.current = false;
+      return;
+    }
     setCompleteAnalysis(null);
   }, [holdings, cash, benchmarkTicker, riskFreeRatePercent]);
+
+  function snapshotPortfolio(validHoldings: PortfolioHolding[]): SavedPortfolio {
+    return {
+      holdings: validHoldings,
+      cash: Math.max(0, cash),
+      benchmarkTicker: benchmarkTicker.trim().toUpperCase() || "SPY",
+      riskFreeRatePercent,
+    };
+  }
+
+  function persistAnalysis(
+    portfolio: SavedPortfolio,
+    nextAnalysis: PortfolioAnalysis,
+    nextCompleteAnalysis: PortfolioCompleteAnalysis | null,
+  ) {
+    const snapshot = writeSnapshot<SavedPortfolioAnalysis>(
+      ANALYSIS_STORAGE_KEY,
+      {
+        fingerprint: portfolioFingerprint(portfolio),
+        analysis: nextAnalysis,
+        completeAnalysis: nextCompleteAnalysis,
+      },
+      PORTFOLIO_TTL_MS,
+    );
+    setSavedAt(snapshot?.savedAt ?? Date.now());
+  }
 
   async function runAnalysis(fresh = false) {
     const validHoldings = holdings.filter(
@@ -119,15 +216,17 @@ export function PortfolioDashboard({ onOpenAnalysis }: { onOpenAnalysis: (ticker
     setLoading(true);
     setError(null);
     try {
-      setAnalysis(
-        await analyzePortfolio(
-          validHoldings,
-          Math.max(0, cash),
-          fresh,
-          benchmarkTicker.trim().toUpperCase() || "SPY",
-          riskFreeRatePercent,
-        ),
+      const portfolio = snapshotPortfolio(validHoldings);
+      const result = await analyzePortfolio(
+        validHoldings,
+        portfolio.cash,
+        fresh,
+        portfolio.benchmarkTicker,
+        portfolio.riskFreeRatePercent,
       );
+      setAnalysis(result);
+      setCompleteAnalysis(null);
+      persistAnalysis(portfolio, result, null);
     } catch (requestError) {
       setError(requestError instanceof Error ? requestError.message : "Analyse indisponible.");
     } finally {
@@ -146,16 +245,18 @@ export function PortfolioDashboard({ onOpenAnalysis }: { onOpenAnalysis: (ticker
     setCompleteLoading(true);
     setError(null);
     try {
+      const portfolio = snapshotPortfolio(validHoldings);
       const result = await analyzeCompletePortfolio(
         validHoldings,
-        Math.max(0, cash),
+        portfolio.cash,
         fresh,
-        benchmarkTicker.trim().toUpperCase() || "SPY",
-        riskFreeRatePercent,
+        portfolio.benchmarkTicker,
+        portfolio.riskFreeRatePercent,
         true,
       );
       setCompleteAnalysis(result);
       setAnalysis(result.portfolio);
+      persistAnalysis(portfolio, result.portfolio, result);
     } catch (requestError) {
       setError(requestError instanceof Error ? requestError.message : "Analyse complete indisponible.");
     } finally {
@@ -164,10 +265,32 @@ export function PortfolioDashboard({ onOpenAnalysis }: { onOpenAnalysis: (ticker
   }
 
   useEffect(() => {
-    void runAnalysis(false);
-    // Initial valuation only; edits are applied when the user validates them.
+    if (initialized.current) return;
+    initialized.current = true;
+    if (initial.restoredAnalysis && !initial.restoredExpired) return;
+    if (initial.restoredExpired && initial.restoredCompleteAnalysis) {
+      void runCompleteAnalysis(true);
+    } else {
+      void runAnalysis(initial.restoredExpired);
+    }
+    // Restore a fresh snapshot; only expired or missing data triggers a request.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  useEffect(() => {
+    if (!savedAt) return;
+    const remaining = savedAt + PORTFOLIO_TTL_MS - Date.now();
+    const timer = window.setTimeout(() => {
+      if (completeAnalysis) {
+        void runCompleteAnalysis(true);
+      } else {
+        void runAnalysis(true);
+      }
+    }, Math.max(0, remaining));
+    return () => window.clearTimeout(timer);
+    // New results update savedAt and replace this timer.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [completeAnalysis, savedAt]);
 
   function updateHolding(index: number, field: keyof PortfolioHolding, value: string) {
     setHoldings((current) =>
@@ -221,6 +344,9 @@ export function PortfolioDashboard({ onOpenAnalysis }: { onOpenAnalysis: (ticker
             <span>Taux sans risque</span>
             <div><input type="number" step="0.1" value={riskFreeRatePercent} onChange={(event) => setRiskFreeRatePercent(Number(event.target.value) || 0)} /><em>%</em></div>
           </label>
+          <span className={`analysis-freshness ${loading || completeLoading ? "refreshing" : ""}`}>
+            {loading || completeLoading ? "Actualisation en cours" : snapshotAgeLabel(savedAt)}
+          </span>
           <button className="portfolio-refresh" type="button" onClick={() => void runAnalysis(true)} disabled={loading}>
             <RefreshCw size={16} className={loading ? "spin" : ""} />
             {loading ? "Valorisation..." : "Actualiser"}
@@ -352,6 +478,15 @@ export function PortfolioDashboard({ onOpenAnalysis }: { onOpenAnalysis: (ticker
           </div>
         </div>
       </section>
+
+      {analysis ? (
+        <PortfolioInsights
+          analysis={analysis}
+          individualAnalyses={completeAnalysis?.individual_analyses}
+          onOpenAnalysis={onOpenAnalysis}
+          title="Analyse financiere du portefeuille"
+        />
+      ) : null}
 
       <div className="portfolio-desktop-grid">
         <section className="portfolio-editor-section">

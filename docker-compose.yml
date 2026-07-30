@@ -1,4 +1,20 @@
 services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      - POSTGRES_DB=stock_ai
+      - POSTGRES_USER=stock_ai
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-stock_ai_dev}
+    ports:
+      - "5432:5432"
+    volumes:
+      - stock_ai_postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U stock_ai -d stock_ai"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
   frontend:
     build:
       context: ./frontend
@@ -21,11 +37,15 @@ services:
       - PORT=3000
       - FRONTEND_ORIGIN=http://localhost:5173
       - AI_BACKEND_URL=http://ai-backend:8000
+      - DATABASE_URL=postgresql://stock_ai:${POSTGRES_PASSWORD:-stock_ai_dev}@postgres:5432/stock_ai
     volumes:
       - ./gateway:/app
       - /app/node_modules
     depends_on:
-      - ai-backend
+      postgres:
+        condition: service_healthy
+      ai-backend:
+        condition: service_started
 
   ai-backend:
     build:
@@ -40,8 +60,11 @@ services:
       - NEBIUS_MODEL=${NEBIUS_MODEL:-Qwen/Qwen3-30B-A3B-Instruct-2507}
       - NEBIUS_MODEL_PORTFOLIO_SYNTHESIS=${NEBIUS_MODEL_PORTFOLIO_SYNTHESIS:-Qwen/Qwen3-30B-A3B-Instruct-2507}
       - NEBIUS_MODEL_PORTFOLIO_RECOMMENDATION=${NEBIUS_MODEL_PORTFOLIO_RECOMMENDATION:-Qwen/Qwen3-30B-A3B-Instruct-2507}
+      - AGENT_MEMORY_DB=/app-data/agent_memory.db
+      - QDRANT_PATH=/app-data/qdrant
     volumes:
       - ./ai-backend:/app
+      - stock_ai_agent_data:/app-data
     depends_on:
       - mcp-server
 
@@ -60,3 +83,7 @@ services:
     volumes:
       - ./mcp-server:/app
       - /app/node_modules
+
+volumes:
+  stock_ai_postgres:
+  stock_ai_agent_data:

@@ -7,11 +7,22 @@ from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, ValidationError
 
 from app.agents import (
+    BacktestingAgent,
+    BacktestResult,
+    TechnicalCalibrationAgent,
+    TechnicalCalibrationResult,
+    EducationAgent,
+    EducationChatRequest,
+    EducationChatResponse,
+    HistoricalReplayAgent,
+    HistoricalReplayResult,
     MarketDataAgent,
     MarketDataResult,
     NewsAgent,
     NewsResult,
     OrchestratedAnalysis,
+    PointInTimeQueryResult,
+    PointInTimeSummary,
     PortfolioAgent,
     PortfolioAnalysisRequest,
     PortfolioAnalysisResult,
@@ -24,6 +35,8 @@ from app.agents import (
     RagResult,
     RiskAgent,
     RiskResult,
+    SocialMediaAgent,
+    SocialMediaResult,
     SynthesisAgent,
     SynthesisResult,
     TechnicalAgent,
@@ -76,14 +89,21 @@ _load_root_env()
 _sanitize_tls_env()
 
 app = FastAPI(title="Stock AI Assistant Backend", version="0.1.0")
+education_agent = EducationAgent()
 market_data_agent = MarketDataAgent()
 technical_agent = TechnicalAgent(market_data_agent=market_data_agent)
+backtesting_agent = BacktestingAgent(technical_agent=technical_agent)
+technical_calibration_agent = TechnicalCalibrationAgent(backtesting_agent=backtesting_agent)
 portfolio_agent = PortfolioAgent(
     market_data_agent=market_data_agent,
     technical_agent=technical_agent,
 )
 news_agent = NewsAgent()
-rag_agent = RagAgent(graph=getattr(market_data_agent.memory, "graph", None))
+social_media_agent = SocialMediaAgent()
+rag_agent = RagAgent(
+    graph=getattr(market_data_agent.memory, "graph", None),
+    point_in_time=getattr(market_data_agent.memory, "point_in_time", None),
+)
 risk_agent = RiskAgent(
     market_data_agent=market_data_agent,
     technical_agent=technical_agent,
@@ -91,6 +111,12 @@ risk_agent = RiskAgent(
     rag_agent=rag_agent,
 )
 synthesis_agent = SynthesisAgent()
+historical_replay_agent = HistoricalReplayAgent(
+    point_in_time=market_data_agent.memory.point_in_time,
+    technical_agent=technical_agent,
+    risk_agent=risk_agent,
+    synthesis_agent=synthesis_agent,
+)
 analysis_orchestrator = StockAnalysisOrchestrator(
     market_data_agent=market_data_agent,
     technical_agent=technical_agent,
@@ -109,6 +135,11 @@ portfolio_recommendation_agent = PortfolioRecommendationAgent(
     technical_agent=technical_agent,
     portfolio_orchestrator=portfolio_analysis_orchestrator,
 )
+
+
+@app.post("/education/chat", response_model=EducationChatResponse)
+def explain_financial_concept(request: EducationChatRequest) -> EducationChatResponse:
+    return education_agent.answer(request)
 
 
 class Metric(BaseModel):
@@ -435,6 +466,78 @@ def run_technical_agent(ticker: str, fresh: bool = False) -> TechnicalResult:
     return technical_agent.run(ticker, use_cache=not fresh)
 
 
+@app.get("/agents/backtesting/{ticker}", response_model=BacktestResult)
+def run_backtesting_agent(
+    ticker: str,
+    benchmark: str = "SPY",
+    period: str = "5y",
+    horizon_days: int = 20,
+    min_history: int = 60,
+    transaction_cost_bps: float = 5.0,
+    slippage_bps: float = 5.0,
+) -> BacktestResult:
+    """Validation walk-forward du TechnicalAgent, sans donnees futures."""
+    return backtesting_agent.run(
+        ticker,
+        benchmark=benchmark,
+        period=period,
+        horizon_days=horizon_days,
+        min_history=min_history,
+        transaction_cost_bps=transaction_cost_bps,
+        slippage_bps=slippage_bps,
+    )
+
+
+@app.get("/agents/backtesting/calibration/run", response_model=TechnicalCalibrationResult)
+def run_technical_calibration(
+    tickers: str | None = None,
+    benchmark: str = "SPY",
+    period: str = "5y",
+    horizons: str = "5,20,60",
+    transaction_cost_bps: float = 5.0,
+    slippage_bps: float = 5.0,
+) -> TechnicalCalibrationResult:
+    """Calibration multi-actions avec split chronologique 60/20/20."""
+    requested_tickers = (
+        [ticker for ticker in tickers.split(",") if ticker.strip()]
+        if tickers
+        else None
+    )
+    try:
+        requested_horizons = [
+            int(value.strip())
+            for value in horizons.split(",")
+            if value.strip()
+        ]
+    except ValueError:
+        requested_horizons = []
+    return technical_calibration_agent.run(
+        requested_tickers,
+        benchmark=benchmark,
+        period=period,
+        horizons=requested_horizons,
+        transaction_cost_bps=transaction_cost_bps,
+        slippage_bps=slippage_bps,
+    )
+
+
+@app.get("/agents/replay/{ticker}", response_model=HistoricalReplayResult)
+def replay_historical_analysis(
+    ticker: str,
+    as_of: str,
+    allow_reconstructed_prices: bool = False,
+) -> HistoricalReplayResult:
+    """Recalcule l'analyse sans appel externe depuis les donnees disponibles a as_of."""
+    try:
+        return historical_replay_agent.run(
+            ticker,
+            as_of,
+            allow_reconstructed_prices=allow_reconstructed_prices,
+        )
+    except ValueError as error:
+        raise HTTPException(status_code=422, detail=f"Date as_of invalide: {error}") from error
+
+
 @app.get("/agents/technical/{ticker}/evaluation", response_model=EvaluationReport)
 def evaluate_technical_agent(ticker: str, fresh: bool = False) -> EvaluationReport:
     """Evaluation qualite du TechnicalAgent (memes principes que le MarketDataAgent)."""
@@ -455,6 +558,22 @@ def run_news_agent(ticker: str, fresh: bool = False, name: str | None = None) ->
     `name` (nom de societe) active le filtre de pertinence des articles.
     """
     return news_agent.run(ticker, use_cache=not fresh, company_name=name)
+
+
+@app.get("/agents/social-media/{ticker}", response_model=SocialMediaResult)
+def run_social_media_agent(
+    ticker: str,
+    fresh: bool = False,
+    with_slm: bool = True,
+    name: str | None = None,
+) -> SocialMediaResult:
+    """Veille Reddit independante, exclue du pipeline d'analyse."""
+    return social_media_agent.run(
+        ticker,
+        use_cache=not fresh,
+        with_slm=with_slm,
+        company_name=name,
+    )
 
 
 @app.get("/agents/news/{ticker}/evaluation", response_model=EvaluationReport)
@@ -543,6 +662,41 @@ def get_risk_memory(ticker: str) -> dict[str, object]:
 def get_market_data_memory(ticker: str) -> dict[str, object]:
     """Memoire structuree + faits du knowledge graph pour un ticker."""
     return market_data_agent.memory.summary(ticker.strip().upper())
+
+
+@app.get(
+    "/agents/point-in-time/{ticker}",
+    response_model=PointInTimeQueryResult,
+)
+def query_point_in_time(
+    ticker: str,
+    component: str | None = None,
+    event_type: str | None = None,
+    as_of: str | None = None,
+    observed_only: bool = False,
+    limit: int = 100,
+) -> PointInTimeQueryResult:
+    """Filtre l'archive selon la date a laquelle les donnees etaient disponibles."""
+    try:
+        return market_data_agent.memory.point_in_time.query(
+            ticker,
+            component=component,
+            event_type=event_type,
+            as_of=as_of,
+            observed_only=observed_only,
+            limit=limit,
+        )
+    except ValueError as error:
+        raise HTTPException(status_code=422, detail=f"Date as_of invalide: {error}") from error
+
+
+@app.get(
+    "/agents/point-in-time/{ticker}/summary",
+    response_model=PointInTimeSummary,
+)
+def get_point_in_time_summary(ticker: str) -> PointInTimeSummary:
+    """Resume la couverture point-in-time par composant, type et mode."""
+    return market_data_agent.memory.point_in_time.summary(ticker)
 
 
 @app.get("/agents/memory/graph")

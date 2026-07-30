@@ -142,10 +142,12 @@ class RagAgent:
         mcp_client: McpClient | None = None,
         slm_client: NebiusClient | None = None,
         graph=None,
+        point_in_time=None,
     ) -> None:
         self.mcp_client = mcp_client or McpClient()
         self.slm_client = slm_client or NebiusClient.for_agent("rag")
         self.graph = graph
+        self.point_in_time = point_in_time
         self._client = None
         # Qdrant en mode local embarque est mono-writer et n'est pas concu pour
         # l'acces concurrent : ce verrou serialise toutes les operations Qdrant
@@ -250,6 +252,15 @@ class RagAgent:
             )
             total_chunks += len(points)
             self._remember(symbol, filing)
+            if self.point_in_time is not None:
+                self.point_in_time.safe_record(
+                    self.point_in_time.record_document,
+                    symbol,
+                    filing.get("form") or "",
+                    filing.get("filing_date"),
+                    url,
+                    len(points),
+                )
 
         status = "success" if total_chunks > 0 else ("partial" if documents else "failed")
         if total_chunks == 0 and not errors:

@@ -52,7 +52,11 @@ class RiskAgent:
         self.slm_client = slm_client or NebiusClient.for_agent("risk")
         memory = getattr(self.market_data_agent, "memory", None)
         self.graph = getattr(memory, "graph", None)
-        self.rag_agent = rag_agent or RagAgent(graph=self.graph)
+        self.point_in_time = getattr(memory, "point_in_time", None)
+        self.rag_agent = rag_agent or RagAgent(
+            graph=self.graph,
+            point_in_time=self.point_in_time,
+        )
 
     def run(self, ticker: str, use_cache: bool = True) -> RiskResult:
         normalized_ticker = ticker.strip().upper()
@@ -92,6 +96,8 @@ class RiskAgent:
         technical: TechnicalResult,
         news: NewsResult,
         rag: RagResult,
+        with_slm: bool = True,
+        remember: bool = True,
     ) -> RiskResult:
         """Produit le diagnostic depuis des resultats amont deja calcules."""
         normalized_ticker = ticker.strip().upper()
@@ -159,8 +165,10 @@ class RiskAgent:
             warnings=warnings,
             errors=errors,
         )
-        self._add_slm_summary(result)
-        self._remember(result)
+        if with_slm:
+            self._add_slm_summary(result)
+        if remember:
+            self._remember(result)
         return result
 
     def _add_slm_summary(self, result: RiskResult) -> None:
@@ -723,6 +731,14 @@ class RiskAgent:
     def _remember(self, result: RiskResult) -> None:
         if self.graph is not None:
             self.graph.ingest_risk_result(result)
+        if self.point_in_time is not None:
+            self.point_in_time.safe_record(
+                self.point_in_time.record_derived,
+                result.ticker,
+                "risk",
+                result.model_dump(mode="json"),
+                result.status,
+            )
 
     def _risk(
         self,

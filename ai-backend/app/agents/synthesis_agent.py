@@ -56,6 +56,7 @@ class SynthesisAgent:
         rag: RagResult,
         risk: RiskResult,
         with_slm: bool = True,
+        remember: bool = True,
     ) -> SynthesisResult:
         symbol = ticker.strip().upper()
         if not symbol:
@@ -144,7 +145,7 @@ class SynthesisAgent:
         )
         if with_slm and status != "failed":
             self._add_slm_summary(result, market_data, technical, news, rag)
-        if status != "failed":
+        if status != "failed" and remember:
             self._compare_with_previous_session(result)
             self.memory.remember(result)
         return result

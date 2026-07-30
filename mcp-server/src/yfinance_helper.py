@@ -27,6 +27,7 @@ CACHE_TTL_SECONDS = env_seconds("YFINANCE_CACHE_TTL_SECONDS", 6 * 60 * 60)
 PARTIAL_CACHE_TTL_SECONDS = env_seconds("YFINANCE_PARTIAL_CACHE_TTL_SECONDS", 15 * 60)
 COOLDOWN_SECONDS = env_seconds("YFINANCE_COOLDOWN_SECONDS", 15 * 60)
 MAX_STALE_SECONDS = env_seconds("YFINANCE_MAX_STALE_SECONDS", 7 * 24 * 60 * 60)
+CACHE_SCHEMA_VERSION = 2
 
 
 def clean_number(value):
@@ -126,7 +127,11 @@ def write_json(path, value):
 
 def read_cached_payload(symbol, period):
     cached = read_json(cache_file(symbol, period))
-    if not isinstance(cached, dict) or not isinstance(cached.get("payload"), dict):
+    if (
+        not isinstance(cached, dict)
+        or cached.get("schema_version") != CACHE_SCHEMA_VERSION
+        or not isinstance(cached.get("payload"), dict)
+    ):
         return None, None
     try:
         age_seconds = max(0, time.time() - float(cached.get("cached_at", 0)))
@@ -138,7 +143,11 @@ def read_cached_payload(symbol, period):
 def write_cached_payload(symbol, period, payload):
     write_json(
         cache_file(symbol, period),
-        {"cached_at": time.time(), "payload": payload},
+        {
+            "schema_version": CACHE_SCHEMA_VERSION,
+            "cached_at": time.time(),
+            "payload": payload,
+        },
     )
 
 
@@ -203,7 +212,7 @@ def stale_payload_with_warning(cached_payload, age_seconds, reason):
     return payload
 
 
-def fetch_live_payload(symbol, period):
+def fetch_live_payload(symbol, period, history_only=False):
     import yfinance as yf
 
     payload = empty_payload(symbol)
@@ -227,7 +236,10 @@ def fetch_live_payload(symbol, period):
 
     historical_prices = []
     if history is not None and not history.empty:
-        for index, row in history.tail(180).iterrows():
+        # Preserve long histories for walk-forward validation. The old 180-row
+        # cap made a requested 5-year period look valid while retaining only
+        # about six months.
+        for index, row in history.tail(2600).iterrows():
             close = clean_number(row.get("Close"))
             if close is None:
                 continue
@@ -246,6 +258,20 @@ def fetch_live_payload(symbol, period):
         errors.append("yfinance history returned no rows.")
 
     payload["historical_prices"] = historical_prices
+    if history_only:
+        if historical_prices:
+            payload["price"] = {
+                "ticker": symbol,
+                "price": historical_prices[-1]["close"],
+                "change_percent": None,
+                "currency": None,
+                "exchange": None,
+                "market_state": None,
+                "source": "yfinance",
+            }
+        payload["errors"] = deduplicate_errors(errors)
+        return payload, rate_limited
+
     if rate_limited:
         return payload, True
 
@@ -332,7 +358,7 @@ def fetch_live_payload(symbol, period):
     return payload, rate_limited
 
 
-def build_payload(ticker, period):
+def build_payload(ticker, period, history_only=False):
     symbol = ticker.strip().upper()
     cached_payload, cache_age = read_cached_payload(symbol, period)
     if cached_payload is not None and cache_age is not None:
@@ -341,7 +367,11 @@ def build_payload(ticker, period):
             return cached_payload
 
     active_cooldown_age = cooldown_age()
-    if active_cooldown_age is not None and active_cooldown_age < COOLDOWN_SECONDS:
+    if (
+        not history_only
+        and active_cooldown_age is not None
+        and active_cooldown_age < COOLDOWN_SECONDS
+    ):
         reason = f"yfinance cooldown active after rate limit ({int(active_cooldown_age)}s elapsed)."
         if cached_payload is not None and cache_age is not None and cache_age <= MAX_STALE_SECONDS:
             return stale_payload_with_warning(cached_payload, cache_age, reason)
@@ -349,7 +379,7 @@ def build_payload(ticker, period):
         payload["errors"] = [reason]
         return payload
 
-    payload, rate_limited = fetch_live_payload(symbol, period)
+    payload, rate_limited = fetch_live_payload(symbol, period, history_only=history_only)
     if rate_limited:
         start_cooldown()
         if cached_payload is not None and cache_age is not None and cache_age <= MAX_STALE_SECONDS:
@@ -370,10 +400,11 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--ticker", required=True)
     parser.add_argument("--period", default="6mo")
+    parser.add_argument("--history-only", action="store_true")
     args = parser.parse_args()
 
     try:
-        payload = build_payload(args.ticker, args.period)
+        payload = build_payload(args.ticker, args.period, history_only=args.history_only)
     except Exception as exc:
         payload = empty_payload(args.ticker.strip().upper())
         payload["errors"] = [f"yfinance helper failed: {exc}"]

@@ -14,13 +14,15 @@ Agents deja implementes :
 |---|---|---|
 | `MarketDataAgent` | Fait | Collecte prix, historique, profil, ratios, etats financiers |
 | `TechnicalAgent` | Fait | Calcule RSI, moyennes mobiles, volatilite, tendance, supports/resistances |
+| `BacktestingAgent` | Fait | Valide le TechnicalAgent en walk-forward face a SPY, sans fuite de donnees |
+| `TechnicalCalibrationAgent` | Fait | Calibre le seuil sur train puis qualifie validation/test sur 15 titres et 3 horizons |
 | `NewsAgent` | Fait | Recupere les actualites, deduplique les articles, analyse le sentiment via SLM |
 | `RiskAgent` | Fait | Combine MarketData + Technical + News pour produire un diagnostic de risque |
 | `RAGAgent` | Fait | Indexe les 10-K/10-Q SEC EDGAR et repond aux questions avec passages sources |
 | `PortfolioAgent` | Fait | Valorise les positions, agrege TechnicalAgent et calcule performance/risque du portefeuille |
 | `PortfolioSynthesisAgent` | Fait | Combine les analyses individuelles, produit un verdict et un reequilibrage simule avec son propre SLM |
 | `PortfolioRecommendationAgent` | Fait | Compose un portefeuille selon le profil utilisateur et justifie chaque allocation avec son propre SLM |
-| `SocialSentimentAgent` | Planifie | Analysera Reddit/X comme signal social separe des news officielles |
+| `SocialMediaAgent` | Fait | Analyse Reddit comme signal social separe des news officielles |
 | `SynthesisAgent` | Fait | Produit une synthese finale et une recommandation simulee |
 | Orchestrateur LangGraph | Fait | Execute les agents dans leur ordre de dependance avec une trace |
 
@@ -37,6 +39,8 @@ Endpoints principaux de validation :
 ```txt
 MarketDataAgent  http://localhost:8000/agents/market-data/MSFT?fresh=true
 TechnicalAgent   http://localhost:8000/agents/technical/MSFT?fresh=true
+BacktestingAgent http://localhost:8000/agents/backtesting/MSFT?benchmark=SPY&period=5y&horizon_days=20
+Calibration      http://localhost:8000/agents/backtesting/calibration/run
 NewsAgent        http://localhost:8000/agents/news/MSFT?fresh=true
 RiskAgent        http://localhost:8000/agents/risk/MSFT?fresh=true
 PortfolioAgent   POST http://localhost:8000/agents/portfolio/analyze
@@ -55,8 +59,15 @@ Le module `PortfolioAgent` actuellement disponible couvre :
 - scores de concentration, diversification et confiance des donnees ;
 - rendement cumule et annualise, volatilite annualisee et drawdown maximal ;
 - beta, Sharpe, Treynor et alpha de Jensen par rapport a un benchmark configurable ;
+- courbe de performance cumulee normalisee du portefeuille face au benchmark ;
 - correlations entre les actions et score technique pondere ;
 - RSI, SMA 20/50, tendance, support/resistance et score technique par position ;
+- fondamentaux comparables par position : PER, prix/actif, marge, ROE,
+  croissance, dette, resultat net et score de completude ;
+- selection interactive d'une position depuis les fondamentaux, avec courbe
+  1M/3M/6M, fiche societe, analyse technique et donnees historiques ;
+- echelle du risque identique a l'analyse mono-action, alimentee uniquement par
+  le vrai `risk_score` du RiskAgent apres l'analyse complete ;
 - endpoint FastAPI `POST /agents/portfolio/analyze` ;
 - endpoint Swagger NestJS `POST /api/portfolio/analyze` ;
 - vue desktop Portefeuille, sauvegardee dans le `localStorage` du navigateur.
@@ -75,7 +86,9 @@ sur les prix (hors dividendes et frais) avec des ponderations statiques. Pas enc
 decouvert, options, conversion multi-devises, transactions historiques ni
 optimisation mathematique de portefeuille. Le reequilibrage actuel est une
 simulation heuristique avec plafond de 30% par ligne et 40% par secteur. EMA,
-MACD, stochastique et bandes de Bollinger restent a ajouter au TechnicalAgent.
+MACD, ATR et bandes de Bollinger sont disponibles dans le TechnicalAgent. Le
+stochastique et leur validation point-in-time dans le module portefeuille restent
+a ajouter.
 
 Les deux syntheses restent independantes :
 
@@ -115,6 +128,8 @@ Le `PortfolioRecommendationAgent` constitue un troisieme workflow independant :
 - endpoint FastAPI `POST /agents/portfolio/recommend` et endpoint gateway
   `POST /api/portfolio/recommend` ;
 - vue frontend separee **Recommandation**.
+- la vue **Recommandation** reutilise la meme lecture financiere que le
+  portefeuille valide : courbe comparee, fondamentaux et analyse technique.
 
 ### Recommendation Engine V2
 
@@ -242,6 +257,8 @@ Endpoints principaux :
 GET /api/health
 GET /api/stocks/{ticker}/market-data
 GET /api/stocks/{ticker}/technical
+GET /api/stocks/{ticker}/backtest
+GET /api/stocks/backtesting/calibration
 GET /api/stocks/{ticker}/news
 GET /api/stocks/{ticker}/risk
 GET /api/stocks/{ticker}/evaluation
@@ -262,6 +279,10 @@ Role des endpoints :
 - `/api/health` : verifier que le gateway fonctionne ;
 - `/api/stocks/{ticker}/market-data` : tester `MarketDataAgent` seul ;
 - `/api/stocks/{ticker}/technical` : tester `TechnicalAgent` seul ;
+- `/api/stocks/{ticker}/backtest` : validation walk-forward du signal technique,
+  avec rendement, benchmark, Sharpe, drawdown et calibration des scores ;
+- `/api/stocks/backtesting/calibration` : calibration multi-actions 60/20/20,
+  avec seuil fige avant le test hors echantillon ;
 - `/api/stocks/{ticker}/news` : tester `NewsAgent` seul ;
 - `/api/stocks/{ticker}/risk` : tester `RiskAgent` seul ;
 - `/api/stocks/{ticker}/analyze` : analyse simplifiee compatible avec l'UI actuelle ;
@@ -427,7 +448,7 @@ slm_summary:
 `MarketDataAgent` dispose d'une memoire persistante en SQLite (`data/agent_memory.db`,
 hors Git, chemin surchargeable via `AGENT_MEMORY_DB`).
 
-Deux composants :
+Trois composants :
 
 - **Memoire structuree** (`app/memory/structured_memory.py`) : tables relationnelles
   pour les snapshots de collecte, profils entreprise, ratios, etats financiers et
@@ -435,6 +456,9 @@ Deux composants :
 - **Knowledge Graph** (`app/memory/knowledge_graph.py`) : faits sujet-predicat-objet
   relies au ticker (`AAPL in_sector TECHNOLOGY`, `AAPL listed_on NASDAQ`,
   `AAPL data_from twelve_data`, ...).
+- **Journal point-in-time** (`app/memory/point_in_time.py`) : archive append-only
+  versionnee des donnees marche, fondamentales, techniques, news, documents,
+  risques et syntheses.
 
 Comportement :
 
@@ -450,6 +474,74 @@ http://localhost:8000/agents/memory/graph
 http://localhost:8000/agents/memory/graph?subject=AAPL
 ```
 
+#### Archive point-in-time
+
+Chaque evenement archive distingue trois dates :
+
+- `effective_at` : periode ou date economique de la donnee ;
+- `available_at` : premiere date a laquelle le systeme pouvait l'utiliser ;
+- `observed_at` : date de collecte effective par Stock AI Assistant.
+
+Le champ `knowledge_mode` evite de confondre historique importe et observation
+reelle :
+
+- `observed` : donnee effectivement recue a cette date ;
+- `reconstructed` : donnee historique chargee a posteriori ;
+- `derived` : resultat deterministe calcule par un agent.
+
+Les payloads sont dedupliques par SHA-256 et le schema dispose d'une table de
+migrations. Une requete `as_of` filtre toujours sur `available_at`, jamais sur
+la date economique seule. `observed_only=true` exclut les reconstructions et
+constitue le mode requis pour les futurs backtests stricts des news et
+fondamentaux.
+
+```txt
+GET /agents/point-in-time/MSFT/summary
+GET /agents/point-in-time/MSFT?component=fundamental&as_of=2025-07-30T12:00:00Z
+GET /agents/point-in-time/MSFT?event_type=price_bar&observed_only=true
+
+GET /api/stocks/MSFT/timeline/summary
+GET /api/stocks/MSFT/timeline?component=news&observedOnly=true
+```
+
+En local, cette archive utilise `data/agent_memory.db`. Docker monte le volume
+persistant `stock_ai_agent_data` dans `/app-data`, qui contient aussi Qdrant.
+Cette premiere implementation rend le protocole point-in-time testable
+immediatement. Un adaptateur PostgreSQL reste necessaire avant la montee en
+charge multi-instance.
+
+#### Replay historique
+
+`HistoricalReplayAgent` reconstruit une analyse a une date `as_of` sans appeler
+les APIs externes et sans SLM. Il charge le dernier snapshot admissible, coupe
+les prix apres la date demandee, recalcule `TechnicalAgent`, puis recalcule
+`RiskAgent` et `SynthesisAgent` sans ecrire de nouvelle memoire.
+
+Deux modes sont disponibles :
+
+- **strict** par defaut : uniquement les snapshots effectivement observes avant
+  `as_of` ;
+- **research** avec `allowReconstructedPrices=true` : autorise uniquement les
+  prix historiques reconstruits, tout en gardant fondamentaux, news et RAG en
+  mode strict.
+
+Le resultat expose `lookahead_guard_passed`, `archive_coverage_score` et une
+trace par composant avec les IDs des evenements utilises. Une couverture
+insuffisante force `donnees_insuffisantes`; un score calcule ne devient donc pas
+une recommandation exploitable sans confiance suffisante.
+
+```txt
+GET /agents/replay/MSFT?as_of=2026-07-30T19:00:00Z
+GET /agents/replay/MSFT?as_of=2026-07-01T23:59:59Z&allow_reconstructed_prices=true
+
+GET /api/stocks/MSFT/replay?asOf=2026-07-30T19:00:00Z
+GET /api/stocks/MSFT/replay?asOf=2026-07-01T23:59:59Z&allowReconstructedPrices=true
+```
+
+Limite actuelle : les documents RAG point-in-time n'archivent encore que leurs
+metadonnees. Le replay documentaire reste donc `partial` tant que les passages
+et embeddings versionnes ne sont pas conserves avec leur date de disponibilite.
+
 Types de memoire prevus pour les prochains agents :
 
 | Agent | Type de memoire | Role |
@@ -459,7 +551,7 @@ Types de memoire prevus pour les prochains agents :
 | `NewsAgent` | Documentaire + Knowledge Graph | News, evenements, sentiment (fait) |
 | `RAGAgent` | Vectorielle + Knowledge Graph | Passages des rapports financiers |
 | `RiskAgent` | Knowledge Graph + analytique | Risques croises donnees/news/documents |
-| `SocialSentimentAgent` | Documentaire courte duree + Knowledge Graph | Posts Reddit/X, volume de mentions, sentiment social |
+| `SocialMediaAgent` | Documentaire courte duree | Posts Reddit, engagement, themes et sentiment social |
 | `SynthesisAgent` | Session + Knowledge Graph | Combinaison des resultats |
 | Orchestrateur | Etat / workflow | Ordre et statut des agents appeles |
 
@@ -894,13 +986,13 @@ Endpoints :
 
 Note : si la cle FMP n'a pas acces aux news (plan gratuit), l'agent fonctionne sur Yahoo RSS + Finnhub + Google News RSS + NewsData.io (warnings non bloquants). Cles dans le `.env` racine : `FINNHUB_API_KEY`, `NEWSDATA_API_KEY` (alternative Google News, format `pub_...`).
 
-### Etape 4 - SocialSentimentAgent (planifie)
+### Etape 4 - SocialMediaAgent (fait)
 
-Statut : planifie, pas encore implemente.
+Statut : implemente et affiche sous **Actualites** dans la page Trading.
 
 Role :
 
-- recuperer des signaux sociaux depuis Reddit et eventuellement X/Twitter ;
+- recuperer des signaux sociaux depuis Reddit ;
 - mesurer le volume de mentions autour d'un ticker ;
 - analyser le sentiment social separement du sentiment news ;
 - detecter les themes recurrents : boycott, plainte client, rumeur, incident produit, euphorie speculative ;
@@ -923,18 +1015,14 @@ sources_used
 warnings
 ```
 
-Impact prevu sur `RiskAgent` :
+L'agent reste volontairement hors de `RiskAgent`, `NewsAgent`, `SynthesisAgent`
+et LangGraph. Il informe l'utilisateur sur la perception sociale sans modifier
+les scores ou recommandations.
 
-- faible a moyen poids dans le score final ;
-- activation seulement si le volume est suffisant ;
-- penalite de confiance si les posts sont peu nombreux, tres repetitifs ou non sources ;
-- risque social ajoute seulement si le signal est fort et coherent.
+Source utilisee :
 
-Sources envisagees :
-
-- Reddit API / Pushshift-like alternatives si disponibles ;
-- X/Twitter API si une cle officielle est disponible ;
-- GDELT ou autres signaux publics comme alternative moins dependante des reseaux sociaux.
+- Reddit OAuth lorsque les identifiants Reddit sont disponibles ;
+- flux RSS Reddit public comme repli.
 
 ### Etape 5 - RiskAgent
 
@@ -1047,7 +1135,6 @@ Etape 1 - parallele :
   MarketDataAgent
   NewsAgent
   RAGAgent
-  SocialSentimentAgent (quand implemente)
 
 Etape 2 - sequentiel :
   TechnicalAgent
@@ -1056,6 +1143,9 @@ Etape 2 - sequentiel :
 Etape 3 - synthese :
   SynthesisAgent
 ```
+
+`SocialMediaAgent` reste execute a part, uniquement lorsque la page Trading
+demande le signal Reddit.
 
 Technologie recommandee :
 
@@ -1245,9 +1335,186 @@ donnees, les scores par dimension, les risques documentes et la trace des six
 agents. Les tests deterministes sont dans
 `ai-backend/tests/test_synthesis_agent.py`.
 
-La prochaine etape logique est de calibrer les ponderations sur un jeu de
-validation historique, puis d'ajouter l'evaluation continue du SynthesisAgent.
+Le premier cadre de validation historique est maintenant disponible dans la vue
+`Validation` et via `BacktestingAgent`. Il utilise des fenetres non chevauchantes,
+ne transmet au TechnicalAgent que les prix connus a la date du signal et compare
+une strategie long/cash au benchmark. Il expose rendement cumule et annualise,
+volatilite annualisee, Sharpe, drawdown, precision directionnelle, taux de
+positions gagnantes, calibration par tranche de score, couts de transaction,
+slippage, intervalle de confiance a 95% et verdict de qualification.
 
-`SocialSentimentAgent` est ajoute au planning comme evolution ulterieure :
-il analysera Reddit/X comme signal social separe, avec un score de confiance
-dedie, sans remplacer les news officielles.
+Le mode **Calibration globale** utilise par defaut 15 grandes entreprises de
+secteurs differents et les horizons 5, 20 et 60 jours. Pour chaque titre, les
+observations sont coupees chronologiquement en 60% train, 20% validation et 20%
+test. Le seuil d'entree est choisi exclusivement sur train, puis reste fige. Les
+resultats affichent la couverture, le seuil retenu, le nombre de trades, l'exces
+de rendement, le Sharpe, l'intervalle de confiance et les criteres bloquants.
+
+Le TechnicalAgent calcule aussi EMA 20/50/200, MACD, ATR 14 et bandes de
+Bollinger. La calibration globale construit maintenant sept facteurs normalises :
+momentum RSI, prix/SMA 50, prix/EMA 200, MACD/ATR, position Bollinger,
+confirmation volume et regime ATR. Pour chaque horizon, elle calcule le
+coefficient d'information de chaque facteur, elimine ceux dont le sens change
+entre train et validation, derive des poids signes uniquement depuis train et
+mesure le score composite sur test.
+
+Ce score reste un **modele candidat**. Il n'ecrase jamais automatiquement le
+score actuel. Il devient eligible uniquement si son exces de rendement est
+positif sur validation et test, s'il ameliore le score de reference, si son
+Sharpe, son intervalle de confiance et la taille de son echantillon passent tous
+les controles. L'UI `Validation` expose les facteurs retenus, leurs poids, leurs
+IC train/validation/test, les motifs de rejet et l'uplift hors echantillon.
+
+La calibration dispose maintenant d'une archive point-in-time append-only. La
+prochaine etape est d'accumuler des observations strictes et de construire le
+replay des dimensions fondamentales, news, RAG, risque et synthese en excluant
+les evenements `reconstructed`. Les taxes, dividendes et impacts de marche non
+lineaires restent a modeliser avant toute qualification d'une strategie
+d'investissement.
+
+## SocialMediaAgent
+
+`SocialMediaAgent` collecte et resume les conversations publiques concernant
+le ticker selectionne. Il est affiche sous **Actualites** dans la page
+**Trading**, mais reste volontairement independant de `NewsAgent` et du
+pipeline LangGraph : ses publications ne modifient donc ni le score de risque,
+ni la synthese, ni une recommandation.
+
+Source prise en charge :
+
+- Reddit via OAuth lorsque `REDDIT_CLIENT_ID` et `REDDIT_CLIENT_SECRET` sont
+  configures, avec repli sur les flux RSS publics ;
+
+L'agent filtre les publications par ticker et nom d'entreprise, normalise
+l'auteur, la date, le lien et l'engagement, puis utilise Qwen pour produire un
+sentiment, des themes et une synthese pedagogique. Le resultat est mis en cache
+15 minutes afin de limiter les quotas. Une collecte Reddit exploitable produit
+un statut `success`; une indisponibilite reste explicite, sans contenu
+artificiel.
+
+Endpoints :
+
+```txt
+GET /social-media/{ticker}                  # MCP Server
+GET /agents/social-media/{ticker}           # ai-backend
+GET /api/stocks/{ticker}/social-media       # Gateway authentifie
+```
+
+Variables optionnelles :
+
+```env
+REDDIT_CLIENT_ID=
+REDDIT_CLIENT_SECRET=
+SOCIAL_MEDIA_CACHE_TTL_SECONDS=900
+SOCIAL_MEDIA_SOURCE_CACHE_TTL_SECONDS=300
+```
+
+# Gestion utilisateur et stockage des historiques
+
+Le Gateway contient maintenant un socle multi-utilisateurs avec deux modes :
+
+- `PGlite` persistant et automatique pour le developpement local ;
+- PostgreSQL lorsque `DATABASE_URL` est defini, notamment avec Docker.
+
+## Fonctionnalites disponibles
+
+- inscription par nom, email et mot de passe ;
+- connexion et deconnexion ;
+- page **Mon profil** accessible depuis l'avatar de la barre laterale ;
+- modification du nom affiche et du profil investisseur ;
+- profil de risque (`prudent`, `equilibre`, `dynamique`), horizon, objectif
+  d'investissement et devise de reference persistants ;
+- changement du mot de passe avec verification de l'ancien et fermeture des
+  autres sessions ;
+- session opaque conservee dans un cookie `HttpOnly`, `SameSite=Lax` ;
+- mots de passe derives avec `scrypt` et un sel aleatoire par utilisateur ;
+- token de session hache en SHA-256 avant stockage ;
+- protection des routes `/api/stocks/*` et `/api/portfolio/*` ;
+- isolation des historiques par `user_id` ;
+- synchronisation des analyses IA, portefeuilles et recommandations entre le
+  navigateur et la base utilisateur ;
+- restauration de la derniere page et des resultats encore frais.
+
+Les durees de fraicheur restent :
+
+- analyse d'une action : 15 minutes ;
+- analyse d'un portefeuille : 15 minutes ;
+- recommandation de portefeuille : 30 minutes.
+
+## Tables utilisateur
+
+- `users` : identite, role et empreinte du mot de passe ;
+- `user_sessions` : sessions hachees, expiration et derniere activite ;
+- `user_snapshots` : historiques JSON isoles par utilisateur, type et cle.
+
+Les routes associees sont documentees dans Swagger :
+
+- `GET /api/auth/me` ;
+- `PATCH /api/auth/profile` ;
+- `PATCH /api/auth/password`.
+
+## Assistant pedagogique boursier
+
+Un chatbot explicatif est disponible depuis l'icone flottante sur toutes les
+pages authentifiees. Il aide l'utilisateur a comprendre les instruments,
+indicateurs et ratios presentes dans l'application : spot, forward, beta,
+SPY, RSI, volatilite, drawdown, Sharpe, PER, spread, etc.
+
+- `EducationAgent` utilise Qwen via Nebius pour produire une explication en
+  francais, un exemple, les limites de la metrique et des questions de suivi ;
+- le contexte de la page et le ticker selectionne sont transmis a l'agent ;
+- les derniers messages sont conserves localement par utilisateur pour
+  maintenir une conversation courte ;
+- un glossaire local repond aux notions principales si le LLM est
+  temporairement indisponible ;
+- le chatbot reste pedagogique et ne formule pas d'ordre personnalise
+  d'achat ou de vente.
+
+Endpoints :
+
+```txt
+POST /education/chat             # appel direct ai-backend
+POST /api/education/chat         # appel authentifie via Gateway
+```
+
+Le contrat retourne notamment `status`, `answer`, `concepts`,
+`suggested_questions`, `provider`, `model` et un eventuel `warning`.
+
+## Demarrage avec Docker
+
+Le fichier `docker-compose.yml` demarre PostgreSQL 16 et configure
+automatiquement `DATABASE_URL` pour le Gateway.
+
+```powershell
+cd C:\Users\user\Desktop\Bourse_IA
+docker compose up --build
+```
+
+La base est exposee localement sur `localhost:5432`. En developpement, le mot
+de passe par defaut est `stock_ai_dev`. Pour une installation partagee :
+
+```powershell
+$env:POSTGRES_PASSWORD = "un_mot_de_passe_long_et_unique"
+docker compose up --build
+```
+
+Sans Docker et sans `DATABASE_URL`, aucune installation supplementaire n'est
+necessaire : le Gateway cree une base PGlite persistante dans
+`gateway/data/user-db`.
+
+Pour utiliser une installation PostgreSQL existante, fournir :
+
+```powershell
+$env:DATABASE_URL = "postgresql://stock_ai:mot_de_passe@localhost:5432/stock_ai"
+```
+
+Le statut et le pilote actif (`pglite` ou `postgresql`) sont visibles dans
+`GET /api/health`.
+
+## Avant une mise en production publique
+
+Le socle actuel couvre l'identification et l'isolation des donnees. Une version
+publique devra encore ajouter la verification email, la reinitialisation du mot
+de passe, la limitation des tentatives de connexion, une politique de mot de
+passe configurable, les journaux d'audit, la suppression de compte et une
+politique de conservation des historiques.

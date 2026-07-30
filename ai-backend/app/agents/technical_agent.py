@@ -13,6 +13,8 @@ from .market_data_agent import MarketDataAgent
 from .nebius_client import NebiusClient
 from .schemas import (
     HistoricalPrice,
+    BollingerBands,
+    MacdIndicator,
     MarketDataResult,
     MovingAverages,
     SlmSummary,
@@ -43,7 +45,7 @@ class TechnicalAgent:
     def run(
         self,
         ticker: str,
-        period: str = "6mo",
+        period: str = "1y",
         use_cache: bool = True,
         with_slm: bool = True,
     ) -> TechnicalResult:
@@ -62,6 +64,7 @@ class TechnicalAgent:
         self,
         market_data: MarketDataResult,
         with_slm: bool = True,
+        remember: bool = True,
     ) -> TechnicalResult:
         """Calcule les indicateurs depuis un resultat MarketData deja collecte."""
         normalized_ticker = market_data.ticker.strip().upper()
@@ -83,6 +86,13 @@ class TechnicalAgent:
 
         sma_20 = self._sma(closes, SMA_SHORT)
         sma_50 = self._sma(closes, SMA_LONG)
+        ema_20 = self._ema(closes, 20)
+        ema_50 = self._ema(closes, 50)
+        ema_200 = self._ema(closes, 200)
+        macd = self._macd(closes)
+        atr_14 = self._atr(prices)
+        atr_percent = round(atr_14 / closes[-1] * 100, 2) if atr_14 and closes[-1] else None
+        bollinger = self._bollinger(closes)
         if sma_50 is None:
             errors.append(f"Historique insuffisant pour la SMA {SMA_LONG} ({len(closes)} points).")
 
@@ -101,7 +111,17 @@ class TechnicalAgent:
             status=status,
             sources_used=market_data.sources_used,
             rsi=rsi,
-            moving_averages=MovingAverages(sma_20=sma_20, sma_50=sma_50),
+            moving_averages=MovingAverages(
+                sma_20=sma_20,
+                sma_50=sma_50,
+                ema_20=ema_20,
+                ema_50=ema_50,
+                ema_200=ema_200,
+            ),
+            macd=macd,
+            atr_14=atr_14,
+            atr_percent=atr_percent,
+            bollinger_bands=bollinger,
             volatility=volatility,
             trend=trend,
             support_level=support,
@@ -114,7 +134,8 @@ class TechnicalAgent:
 
         if with_slm:
             self._add_slm_summary(result)
-        self.memory.remember(result)
+        if remember:
+            self.memory.remember(result)
         return result
 
     def _add_slm_summary(self, result: TechnicalResult) -> None:
@@ -149,6 +170,77 @@ class TechnicalAgent:
         if len(closes) < window:
             return None
         return round(sum(closes[-window:]) / window, 2)
+
+    def _ema_series(self, values: list[float], window: int) -> list[float]:
+        if len(values) < window:
+            return []
+        multiplier = 2 / (window + 1)
+        series = [sum(values[:window]) / window]
+        for value in values[window:]:
+            series.append((value - series[-1]) * multiplier + series[-1])
+        return series
+
+    def _ema(self, closes: list[float], window: int) -> float | None:
+        series = self._ema_series(closes, window)
+        return round(series[-1], 2) if series else None
+
+    def _macd(self, closes: list[float]) -> MacdIndicator:
+        if len(closes) < 35:
+            return MacdIndicator()
+        ema_12 = self._ema_series(closes, 12)
+        ema_26 = self._ema_series(closes, 26)
+        offset = len(ema_12) - len(ema_26)
+        macd_series = [
+            ema_12[index + offset] - ema_26[index]
+            for index in range(len(ema_26))
+        ]
+        signal_series = self._ema_series(macd_series, 9)
+        if not signal_series:
+            return MacdIndicator()
+        macd_value = macd_series[-1]
+        signal_value = signal_series[-1]
+        return MacdIndicator(
+            macd=round(macd_value, 3),
+            signal=round(signal_value, 3),
+            histogram=round(macd_value - signal_value, 3),
+        )
+
+    def _atr(self, prices: list[HistoricalPrice], period: int = 14) -> float | None:
+        if len(prices) < period + 1:
+            return None
+        true_ranges: list[float] = []
+        for previous, current in zip(prices, prices[1:]):
+            high = current.high if current.high is not None else current.close
+            low = current.low if current.low is not None else current.close
+            true_ranges.append(
+                max(
+                    high - low,
+                    abs(high - previous.close),
+                    abs(low - previous.close),
+                )
+            )
+        atr = sum(true_ranges[:period]) / period
+        for value in true_ranges[period:]:
+            atr = (atr * (period - 1) + value) / period
+        return round(atr, 3)
+
+    def _bollinger(self, closes: list[float], window: int = 20) -> BollingerBands:
+        if len(closes) < window:
+            return BollingerBands()
+        recent = closes[-window:]
+        middle = sum(recent) / window
+        variance = sum((value - middle) ** 2 for value in recent) / window
+        deviation = variance**0.5
+        upper = middle + 2 * deviation
+        lower = middle - 2 * deviation
+        width = upper - lower
+        position = (closes[-1] - lower) / width * 100 if width else None
+        return BollingerBands(
+            upper=round(upper, 2),
+            middle=round(middle, 2),
+            lower=round(lower, 2),
+            position_percent=round(position, 1) if position is not None else None,
+        )
 
     def _volatility(self, closes: list[float], window: int = VOLATILITY_WINDOW) -> float | None:
         """Ecart type des rendements quotidiens (%) sur les `window` dernieres seances."""

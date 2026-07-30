@@ -11,6 +11,7 @@ import {
   Grid2X2,
   Home,
   LineChart,
+  LogOut,
   Network,
   RefreshCw,
   Search,
@@ -18,18 +19,60 @@ import {
   Timer,
   TrendingDown,
   TrendingUp,
+  UserRound,
   WalletCards,
   X,
   Zap,
 } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { AgentMetrics } from "./components/AgentMetrics";
+import { ConceptContextHelp } from "./components/ConceptContextHelp";
 import { FullAnalysis } from "./components/FullAnalysis";
+import { HistoricalBacktest } from "./components/HistoricalBacktest";
+import { EducationChat } from "./components/EducationChat";
 import { NewsFeed } from "./components/NewsFeed";
 import { PortfolioDashboard } from "./components/PortfolioDashboard";
 import { PortfolioRecommendation } from "./components/PortfolioRecommendation";
+import { SocialMediaFeed } from "./components/SocialMediaFeed";
+import { UserProfile } from "./components/UserProfile";
 import { fetchMarketDashboard } from "./services/analysisApi";
+import type { AuthUser } from "./services/authApi";
 import type { MarketDashboard, MarketRow } from "./types";
+
+type AppView =
+  | "trading"
+  | "analysis"
+  | "portfolio"
+  | "recommendation"
+  | "backtesting"
+  | "dashboard"
+  | "profile";
+
+const APP_STATE_KEY = "stock-ai-navigation-v1";
+const APP_VIEWS: AppView[] = [
+  "trading",
+  "analysis",
+  "portfolio",
+  "recommendation",
+  "backtesting",
+  "dashboard",
+  "profile",
+];
+
+function readAppState(): { selectedSymbol: string; view: AppView } {
+  try {
+    const parsed = JSON.parse(localStorage.getItem(APP_STATE_KEY) ?? "null") as {
+      selectedSymbol?: string;
+      view?: AppView;
+    } | null;
+    return {
+      selectedSymbol: parsed?.selectedSymbol?.trim().toUpperCase() || "AAPL",
+      view: parsed?.view && APP_VIEWS.includes(parsed.view) ? parsed.view : "trading",
+    };
+  } catch {
+    return { selectedSymbol: "AAPL", view: "trading" };
+  }
+}
 
 const moneyFormatter = new Intl.NumberFormat("fr-FR", {
   maximumFractionDigits: 0,
@@ -328,11 +371,20 @@ function StatsRow({ rows }: { rows: MarketRow[] }) {
   );
 }
 
-export function App() {
+export function App({
+  user,
+  onLogout,
+  onUserUpdated,
+}: {
+  user: AuthUser;
+  onLogout: () => Promise<void>;
+  onUserUpdated: (user: AuthUser) => void;
+}) {
+  const [initialAppState] = useState(readAppState);
   const [dashboard, setDashboard] = useState<MarketDashboard>(fallbackDashboard);
-  const [selectedSymbol, setSelectedSymbol] = useState("AAPL");
+  const [selectedSymbol, setSelectedSymbol] = useState(initialAppState.selectedSymbol);
   const [loading, setLoading] = useState(false);
-  const [view, setView] = useState<"trading" | "analysis" | "portfolio" | "recommendation" | "dashboard">("trading");
+  const [view, setView] = useState<AppView>(initialAppState.view);
   const [marketPage, setMarketPage] = useState(1);
 
   async function loadDashboard(page = marketPage) {
@@ -358,6 +410,10 @@ export function App() {
     void loadDashboard();
   }, []);
 
+  useEffect(() => {
+    localStorage.setItem(APP_STATE_KEY, JSON.stringify({ selectedSymbol, view }));
+  }, [selectedSymbol, view]);
+
   const selectedRow = useMemo(
     () => dashboard.rows.find((row) => row.symbol === selectedSymbol) ?? dashboard.rows[0],
     [dashboard.rows, selectedSymbol],
@@ -379,6 +435,10 @@ export function App() {
   function openAnalysis(symbol: string) {
     setSelectedSymbol(symbol);
     setView("analysis");
+  }
+
+  function selectCompany(symbol: string) {
+    setSelectedSymbol(symbol);
   }
 
   return (
@@ -412,7 +472,7 @@ export function App() {
             <button type="button" title="Réseau">
               <Network size={20} />
             </button>
-            <button type="button" title="Horloge">
+            <button className={view === "backtesting" ? "active" : ""} type="button" title="Validation historique" onClick={() => setView("backtesting")}>
               <Clock3 size={20} />
             </button>
             <button type="button" title="Mondial">
@@ -422,7 +482,21 @@ export function App() {
               <CalendarDays size={20} />
             </button>
           </nav>
-          <div className="avatar" />
+          <div className="user-rail-profile">
+            <button
+              className={`user-avatar-button ${view === "profile" ? "active" : ""}`}
+              type="button"
+              title={`${user.displayName} · ${user.email}`}
+              aria-label="Ouvrir mon profil"
+              onClick={() => setView("profile")}
+            >
+              {user.displayName.slice(0, 1).toUpperCase()}
+              <UserRound size={13} />
+            </button>
+            <button className="user-logout-button" type="button" title="Se deconnecter" onClick={() => void onLogout()}>
+              <LogOut size={16} />
+            </button>
+          </div>
           <button className="collapse-button" type="button" title="Réduire">
             <ChevronsRight size={20} />
           </button>
@@ -473,6 +547,13 @@ export function App() {
                   <Sparkles size={15} /> Recommandation
                 </button>
                 <button
+                  className={view === "backtesting" ? "selected" : ""}
+                  type="button"
+                  onClick={() => setView("backtesting")}
+                >
+                  <Clock3 size={15} /> Validation
+                </button>
+                <button
                   className={view === "dashboard" ? "selected" : ""}
                   type="button"
                   onClick={() => setView("dashboard")}
@@ -491,7 +572,15 @@ export function App() {
           </header>
 
           {/* Content */}
-          {view === "dashboard" ? (
+          {view === "profile" ? (
+            <UserProfile
+              user={user}
+              onUserUpdated={onUserUpdated}
+              onLogout={onLogout}
+            />
+          ) : view === "backtesting" ? (
+            <HistoricalBacktest ticker={selectedSymbol} />
+          ) : view === "dashboard" ? (
             <AgentMetrics />
           ) : view === "recommendation" ? (
             <PortfolioRecommendation onOpenAnalysis={openAnalysis} />
@@ -524,7 +613,10 @@ export function App() {
                         className={`portfolio-position ${isActive ? "active" : ""}`}
                         key={position.id}
                         type="button"
-                        onClick={() => openAnalysis(position.symbol)}
+                        aria-pressed={isActive}
+                        title="Un clic : sélectionner · Double-clic : ouvrir l’analyse IA"
+                        onClick={() => selectCompany(position.symbol)}
+                        onDoubleClick={() => openAnalysis(position.symbol)}
                       >
                         <span className="portfolio-position-id">{position.id}</span>
                         <strong>{position.symbol}</strong>
@@ -552,7 +644,7 @@ export function App() {
                   <div style={{ padding: "0 14px 14px" }}>
                     <TickerSearch
                       rows={dashboard.rows}
-                      onSelect={openAnalysis}
+                      onSelect={selectCompany}
                     />
                   </div>
 
@@ -643,7 +735,10 @@ export function App() {
                           className={`market-row ${row.symbol === selectedSymbol ? "selected-row" : ""}`}
                           key={row.symbol}
                           type="button"
-                          onClick={() => openAnalysis(row.symbol)}
+                          aria-pressed={row.symbol === selectedSymbol}
+                          title="Un clic : sélectionner · Double-clic : ouvrir l’analyse IA"
+                          onClick={() => selectCompany(row.symbol)}
+                          onDoubleClick={() => openAnalysis(row.symbol)}
                         >
                           <div className="market-row-left">
                             <img
@@ -758,12 +853,19 @@ export function App() {
 
                 <div className="right-stack">
                   <NewsFeed ticker={selectedSymbol} />
+                  <SocialMediaFeed ticker={selectedSymbol} />
                 </div>
               </div>
             </>
           )}
         </section>
       </main>
+      <ConceptContextHelp page={view} ticker={selectedSymbol} />
+      <EducationChat
+        userId={user.id}
+        page={view}
+        ticker={selectedSymbol}
+      />
     </>
   );
 }

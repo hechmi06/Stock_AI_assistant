@@ -129,6 +129,87 @@ class NebiusClient:
             f"RECOMMANDATION_CALCULEE:\n{json.dumps(payload, ensure_ascii=True)}",
         )
 
+    def explain_finance(
+        self,
+        message: str,
+        history: list[dict[str, str]],
+        context: dict[str, str | None],
+    ) -> dict[str, Any] | None:
+        """Assistant pedagogique pour les notions financieres et boursieres."""
+        if not self.is_enabled():
+            return None
+
+        system = (
+            "Tu es un professeur de finance de marche pour une application d'analyse boursiere.\n"
+            "Reponds en francais, avec un vocabulaire clair mais rigoureux.\n"
+            "Explique la notion demandee, son calcul si pertinent, son interpretation, "
+            "un exemple simple et ses limites.\n"
+            "Distingue toujours correlation et causalite, historique et prediction.\n"
+            "Ne donne jamais d'ordre d'achat ou de vente personnalise. Si la question "
+            "demande une decision d'investissement, transforme-la en explication des "
+            "criteres a examiner et rappelle que la reponse est pedagogique.\n"
+            "N'invente aucun cours, rendement ou chiffre actuel. Le ticker et la page "
+            "servent uniquement de contexte d'interface.\n"
+            "Retourne strictement un objet JSON avec les champs: "
+            "answer (string, 2 a 5 paragraphes courts), concepts (liste de 1 a 6 termes), "
+            "suggested_questions (liste de 2 a 3 questions courtes)."
+        )
+        payload = {
+            "question": message,
+            "context": context,
+            "conversation": history[-8:],
+        }
+        return self._chat_json(
+            system,
+            json.dumps(payload, ensure_ascii=False),
+        )
+
+    def analyze_social_media(
+        self, payload: dict[str, Any]
+    ) -> dict[str, Any] | None:
+        """Analyse un signal social separe des actualites et du pipeline."""
+        if not self.is_enabled():
+            return None
+
+        system = (
+            "Tu es le SLM d'un agent de veille sociale boursiere independant.\n"
+            "Reponds exclusivement en francais.\n"
+            "Analyse uniquement les publications Reddit fournies. "
+            "Ne les traite pas comme des actualites verifiees.\n"
+            "Identifie le sentiment agrege, les themes recurrents, le bruit, "
+            "les formulations promotionnelles et les limites de representativite.\n"
+            "N'invente aucune publication et ne donne aucun ordre d'achat ou de vente.\n"
+            "Retourne strictement un objet JSON avec: summary (string court), "
+            "data_quality (string), sentiment_label "
+            "(positive|negative|neutral|mixed), sentiment_score (-1 a 1), "
+            "themes (liste de 1 a 5), key_points (liste), warnings (liste), "
+            "post_sentiments (liste d'objets index et sentiment)."
+        )
+        compact_posts = [
+            {
+                "index": index,
+                "source": post.get("source"),
+                "author": post.get("author"),
+                "text": str(post.get("text") or "")[:900],
+                "engagement": post.get("engagement"),
+                "published_at": post.get("published_at"),
+            }
+            for index, post in enumerate((payload.get("posts") or [])[:24])
+            if isinstance(post, dict)
+        ]
+        return self._chat_json(
+            system,
+            json.dumps(
+                {
+                    "ticker": payload.get("ticker"),
+                    "sources_used": payload.get("sources_used"),
+                    "source_status": payload.get("source_status"),
+                    "posts": compact_posts,
+                },
+                ensure_ascii=False,
+            ),
+        )
+
     def analyze_news(self, payload: dict[str, Any]) -> dict[str, Any] | None:
         """Analyse de sentiment des news : un seul appel batch pour tous les articles.
 

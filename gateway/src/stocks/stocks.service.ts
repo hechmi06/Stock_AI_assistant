@@ -106,7 +106,22 @@ type TechnicalResult = {
   status: "success" | "partial" | "failed";
   sources_used: Array<"twelve_data" | "yfinance" | "alpha_vantage" | "financial_modeling_prep">;
   rsi: number | null;
-  moving_averages: { sma_20: number | null; sma_50: number | null };
+  moving_averages: {
+    sma_20: number | null;
+    sma_50: number | null;
+    ema_20: number | null;
+    ema_50: number | null;
+    ema_200: number | null;
+  };
+  macd: { macd: number | null; signal: number | null; histogram: number | null };
+  atr_14: number | null;
+  atr_percent: number | null;
+  bollinger_bands: {
+    upper: number | null;
+    middle: number | null;
+    lower: number | null;
+    position_percent: number | null;
+  };
   volatility: number | null;
   trend: "bullish" | "bearish" | "neutral";
   support_level: number | null;
@@ -130,6 +145,47 @@ type TechnicalResult = {
   } | null;
 };
 
+type BacktestResult = {
+  ticker: string;
+  benchmark: string;
+  status: "success" | "partial" | "failed";
+  methodology: "walk_forward_long_cash";
+  period: string;
+  horizon_days: number;
+  min_history: number;
+  period_start: string | null;
+  period_end: string | null;
+  history_points: number;
+  evaluation_count: number;
+  signal_counts: Record<string, number>;
+  reliability_level: "low" | "medium" | "high";
+  lookahead_guard: boolean;
+  metrics: Record<string, number | null>;
+  calibration: Array<Record<string, string | number | null>>;
+  observations: Array<Record<string, string | number>>;
+  excluded_components: string[];
+  warnings: string[];
+  errors: string[];
+};
+
+type TechnicalCalibrationResult = {
+  status: "success" | "partial" | "failed";
+  benchmark: string;
+  period: string;
+  tickers_requested: string[];
+  tickers_completed: string[];
+  horizons: number[];
+  transaction_cost_bps: number;
+  slippage_bps: number;
+  split: Record<string, number>;
+  methodology: "chronological_train_validation_test";
+  overall_verdict: "validated" | "promising" | "not_validated" | "insufficient";
+  horizon_results: Array<Record<string, unknown>>;
+  coverage: Array<Record<string, unknown>>;
+  warnings: string[];
+  errors: string[];
+};
+
 type NewsOrigin = "financial_modeling_prep" | "yahoo_rss" | "finnhub" | "google_news_rss" | "newsdata_io";
 
 type NewsResult = {
@@ -148,6 +204,48 @@ type NewsResult = {
   sentiment_label: "positive" | "negative" | "neutral" | "mixed" | null;
   sentiment_score: number | null;
   key_events: string[];
+  warnings: string[];
+  errors: string[];
+  slm_summary: {
+    provider: string;
+    model: string;
+    summary: string;
+    data_quality: string;
+    key_points: string[];
+    warnings: string[];
+  } | null;
+};
+
+type SocialMediaResult = {
+  ticker: string;
+  status: "success" | "partial" | "failed";
+  collected_at: string | null;
+  posts: Array<{
+    id: string;
+    source: "reddit";
+    author: string;
+    text: string;
+    url: string;
+    published_at: string;
+    engagement: {
+      score?: number | null;
+      comments?: number | null;
+    };
+    sentiment: "positive" | "negative" | "neutral" | "mixed" | null;
+  }>;
+  sources_used: Array<"reddit">;
+  source_status: Record<
+    "reddit",
+    {
+      status: "success" | "empty" | "unavailable" | "failed";
+      posts_count: number;
+      error?: string | null;
+    }
+  >;
+  sentiment_label: "positive" | "negative" | "neutral" | "mixed" | null;
+  sentiment_score: number | null;
+  themes: string[];
+  summary: string | null;
   warnings: string[];
   errors: string[];
   slm_summary: {
@@ -302,7 +400,8 @@ const fallbackAnalysis: Record<string, StockAnalysis> = {
 
 @Injectable()
 export class StocksService {
-  private readonly aiBackendUrl = process.env.AI_BACKEND_URL ?? "http://localhost:8000";
+  private readonly aiBackendUrl =
+    process.env.AI_BACKEND_URL ?? "http://127.0.0.1:8000";
 
   async getMarketDashboard(options?: { page?: number; limit?: number; search?: string }): Promise<MarketDashboard> {
     const page = options?.page ?? 1;
@@ -445,7 +544,22 @@ export class StocksService {
         status: "failed",
         sources_used: [],
         rsi: null,
-        moving_averages: { sma_20: null, sma_50: null },
+        moving_averages: {
+          sma_20: null,
+          sma_50: null,
+          ema_20: null,
+          ema_50: null,
+          ema_200: null,
+        },
+        macd: { macd: null, signal: null, histogram: null },
+        atr_14: null,
+        atr_percent: null,
+        bollinger_bands: {
+          upper: null,
+          middle: null,
+          lower: null,
+          position_percent: null,
+        },
         volatility: null,
         trend: "neutral",
         support_level: null,
@@ -462,6 +576,104 @@ export class StocksService {
         slm_summary: null,
       };
     }
+  }
+
+  async getBacktest(
+    ticker: string,
+    options: {
+      benchmark: string;
+      period: string;
+      horizonDays: number;
+      minHistory: number;
+      transactionCostBps: number;
+      slippageBps: number;
+    },
+  ): Promise<BacktestResult> {
+    const normalizedTicker = ticker.trim().toUpperCase();
+    const params = new URLSearchParams({
+      benchmark: options.benchmark.trim().toUpperCase(),
+      period: options.period,
+      horizon_days: String(options.horizonDays),
+      min_history: String(options.minHistory),
+      transaction_cost_bps: String(options.transactionCostBps),
+      slippage_bps: String(options.slippageBps),
+    });
+    return this.fetchRequired<BacktestResult>(
+      `/agents/backtesting/${normalizedTicker}?${params.toString()}`,
+      "BacktestingAgent indisponible.",
+    );
+  }
+
+  async getTechnicalCalibration(options: {
+    tickers?: string;
+    benchmark: string;
+    period: string;
+    horizons: string;
+    transactionCostBps: number;
+    slippageBps: number;
+  }): Promise<TechnicalCalibrationResult> {
+    const params = new URLSearchParams({
+      benchmark: options.benchmark.trim().toUpperCase(),
+      period: options.period,
+      horizons: options.horizons,
+      transaction_cost_bps: String(options.transactionCostBps),
+      slippage_bps: String(options.slippageBps),
+    });
+    if (options.tickers?.trim()) {
+      params.set("tickers", options.tickers);
+    }
+    return this.fetchRequired<TechnicalCalibrationResult>(
+      `/agents/backtesting/calibration/run?${params.toString()}`,
+      "Calibration du TechnicalAgent indisponible.",
+    );
+  }
+
+  async getPointInTimeEvents(
+    ticker: string,
+    options: {
+      component?: string;
+      eventType?: string;
+      asOf?: string;
+      observedOnly: boolean;
+      limit: number;
+    },
+  ): Promise<Record<string, unknown>> {
+    const normalizedTicker = ticker.trim().toUpperCase();
+    const params = new URLSearchParams({
+      observed_only: String(options.observedOnly),
+      limit: String(Math.max(1, Math.min(1000, options.limit || 100))),
+    });
+    if (options.component?.trim()) params.set("component", options.component.trim());
+    if (options.eventType?.trim()) params.set("event_type", options.eventType.trim());
+    if (options.asOf?.trim()) params.set("as_of", options.asOf.trim());
+    return this.fetchRequired<Record<string, unknown>>(
+      `/agents/point-in-time/${normalizedTicker}?${params.toString()}`,
+      "Archive point-in-time indisponible.",
+    );
+  }
+
+  async getPointInTimeSummary(ticker: string): Promise<Record<string, unknown>> {
+    const normalizedTicker = ticker.trim().toUpperCase();
+    return this.fetchRequired<Record<string, unknown>>(
+      `/agents/point-in-time/${normalizedTicker}/summary`,
+      "Resume point-in-time indisponible.",
+    );
+  }
+
+  async replayHistoricalAnalysis(
+    ticker: string,
+    asOf: string,
+    allowReconstructedPrices = false,
+  ): Promise<Record<string, unknown>> {
+    const normalizedTicker = ticker.trim().toUpperCase();
+    const params = new URLSearchParams({
+      as_of: asOf,
+      allow_reconstructed_prices: String(allowReconstructedPrices),
+    });
+    return this.fetchRequired<Record<string, unknown>>(
+      `/agents/replay/${normalizedTicker}?${params.toString()}`,
+      "Replay historique indisponible.",
+    );
   }
 
   async getNews(ticker: string): Promise<NewsResult> {
@@ -486,6 +698,48 @@ export class StocksService {
         key_events: [],
         warnings: [],
         errors: ["Gateway could not reach the AI backend NewsAgent endpoint."],
+        slm_summary: null,
+      };
+    }
+  }
+
+  async getSocialMedia(
+    ticker: string,
+    fresh = false,
+    withSlm = true,
+  ): Promise<SocialMediaResult> {
+    const normalizedTicker = ticker.trim().toUpperCase();
+
+    try {
+      const params = new URLSearchParams({
+        fresh: String(fresh),
+        with_slm: String(withSlm),
+      });
+      const response = await fetch(
+        `${this.aiBackendUrl}/agents/social-media/${normalizedTicker}?${params.toString()}`,
+      );
+      if (!response.ok) {
+        throw new Error(`AI backend returned ${response.status}`);
+      }
+      return (await response.json()) as SocialMediaResult;
+    } catch {
+      return {
+        ticker: normalizedTicker || "AAPL",
+        status: "failed",
+        collected_at: null,
+        posts: [],
+        sources_used: [],
+        source_status: {
+          reddit: { status: "failed", posts_count: 0 },
+        },
+        sentiment_label: null,
+        sentiment_score: null,
+        themes: [],
+        summary: null,
+        warnings: [],
+        errors: [
+          "Gateway could not reach the independent SocialMediaAgent endpoint.",
+        ],
         slm_summary: null,
       };
     }

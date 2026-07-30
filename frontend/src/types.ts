@@ -132,6 +132,53 @@ export type NewsResult = {
   } | null;
 };
 
+export type SocialSource = "reddit";
+export type SocialSourceState = "success" | "empty" | "unavailable" | "failed";
+
+export type SocialPost = {
+  id: string;
+  source: SocialSource;
+  author: string;
+  text: string;
+  url: string;
+  published_at: string;
+  engagement: {
+    score?: number | null;
+    comments?: number | null;
+  };
+  sentiment: NewsSentiment | null;
+};
+
+export type SocialMediaResult = {
+  ticker: string;
+  status: "success" | "partial" | "failed";
+  collected_at: string | null;
+  posts: SocialPost[];
+  sources_used: SocialSource[];
+  source_status: Record<
+    SocialSource,
+    {
+      status: SocialSourceState;
+      posts_count: number;
+      error?: string | null;
+    }
+  >;
+  sentiment_label: NewsSentiment | null;
+  sentiment_score: number | null;
+  themes: string[];
+  summary: string | null;
+  warnings: string[];
+  errors: string[];
+  slm_summary: {
+    provider: string;
+    model: string;
+    summary: string;
+    data_quality: string;
+    key_points: string[];
+    warnings: string[];
+  } | null;
+};
+
 export type MetricResult = {
   name: string;
   score: number;
@@ -147,6 +194,150 @@ export type EvaluationReport = {
   total_score: number;
   grade: EvaluationGrade;
   passed: boolean;
+};
+
+export type BacktestObservation = {
+  signal_date: string;
+  exit_date: string;
+  technical_score: number;
+  signal: "positive" | "negative" | "neutral";
+  entry_price: number;
+  exit_price: number;
+  forward_return_percent: number;
+  strategy_return_percent: number;
+  benchmark_return_percent: number;
+  execution_cost_percent: number;
+  cumulative_strategy_percent: number;
+  cumulative_ticker_percent: number;
+  cumulative_benchmark_percent: number;
+  feature_signals: Record<string, number>;
+};
+
+export type BacktestResult = {
+  ticker: string;
+  benchmark: string;
+  status: "success" | "partial" | "failed";
+  methodology: "walk_forward_long_cash";
+  period: string;
+  horizon_days: number;
+  min_history: number;
+  transaction_cost_bps: number;
+  slippage_bps: number;
+  period_start: string | null;
+  period_end: string | null;
+  history_points: number;
+  evaluation_count: number;
+  signal_counts: Record<string, number>;
+  reliability_level: "low" | "medium" | "high";
+  verdict: "validated" | "recalibrate" | "not_validated" | "insufficient";
+  lookahead_guard: boolean;
+  qualification_checks: QualificationCheck[];
+  metrics: {
+    strategy_return_percent: number;
+    ticker_buy_hold_return_percent: number;
+    benchmark_return_percent: number;
+    excess_return_percent: number;
+    annualized_return_percent: number;
+    annualized_volatility_percent: number;
+    sharpe_ratio: number | null;
+    max_drawdown_percent: number;
+    average_trade_return_percent: number;
+    directional_accuracy_percent: number | null;
+    invested_win_rate_percent: number | null;
+    mean_return_ci_95_low_percent: number | null;
+    mean_return_ci_95_high_percent: number | null;
+  };
+  calibration: Array<{
+    label: string;
+    score_min: number;
+    score_max: number;
+    observations: number;
+    average_forward_return_percent: number | null;
+    positive_return_rate_percent: number | null;
+  }>;
+  observations: BacktestObservation[];
+  excluded_components: string[];
+  warnings: string[];
+  errors: string[];
+};
+
+export type QualificationCheck = {
+  name: string;
+  passed: boolean;
+  actual: number | string | null;
+  threshold: string;
+};
+
+export type CalibrationSplitMetrics = {
+  observations: number;
+  invested_trades: number;
+  average_strategy_return_percent: number;
+  average_benchmark_return_percent: number;
+  average_excess_return_percent: number;
+  annualized_sharpe_ratio: number | null;
+  win_rate_percent: number | null;
+  mean_return_ci_95_low_percent: number | null;
+  mean_return_ci_95_high_percent: number | null;
+};
+
+export type TechnicalFeatureDiagnostic = {
+  name: string;
+  label: string;
+  train_information_coefficient: number | null;
+  validation_information_coefficient: number | null;
+  test_information_coefficient: number | null;
+  train_coverage_percent: number;
+  selected: boolean;
+  rejection_reason: string | null;
+  weight: number;
+};
+
+export type TechnicalFeatureModel = {
+  status: "candidate" | "rejected" | "insufficient";
+  production_eligible: boolean;
+  selected_features: string[];
+  weights: Record<string, number>;
+  selected_threshold: number;
+  train: CalibrationSplitMetrics;
+  validation: CalibrationSplitMetrics;
+  test: CalibrationSplitMetrics;
+  baseline_test: CalibrationSplitMetrics;
+  test_excess_uplift_percent: number;
+  diagnostics: TechnicalFeatureDiagnostic[];
+  checks: QualificationCheck[];
+  notes: string[];
+};
+
+export type TechnicalCalibrationResult = {
+  status: "success" | "partial" | "failed";
+  benchmark: string;
+  period: string;
+  tickers_requested: string[];
+  tickers_completed: string[];
+  horizons: number[];
+  transaction_cost_bps: number;
+  slippage_bps: number;
+  split: Record<string, number>;
+  methodology: "chronological_train_validation_test";
+  overall_verdict: "validated" | "promising" | "not_validated" | "insufficient";
+  horizon_results: Array<{
+    horizon_days: number;
+    selected_threshold: number;
+    train: CalibrationSplitMetrics;
+    validation: CalibrationSplitMetrics;
+    test: CalibrationSplitMetrics;
+    verdict: "validated" | "promising" | "not_validated" | "insufficient";
+    checks: QualificationCheck[];
+    feature_model: TechnicalFeatureModel;
+  }>;
+  coverage: Array<{
+    ticker: string;
+    status: "success" | "partial" | "failed";
+    observations_by_horizon: Record<string, number>;
+    error: string | null;
+  }>;
+  warnings: string[];
+  errors: string[];
 };
 
 export type AnalysisStatus = "success" | "partial" | "failed";
@@ -242,7 +433,22 @@ export type OrchestratedAnalysis = {
   technical: {
     status: AnalysisStatus;
     rsi: number | null;
-    moving_averages: { sma_20: number | null; sma_50: number | null };
+    moving_averages: {
+      sma_20: number | null;
+      sma_50: number | null;
+      ema_20: number | null;
+      ema_50: number | null;
+      ema_200: number | null;
+    };
+    macd: { macd: number | null; signal: number | null; histogram: number | null };
+    atr_14: number | null;
+    atr_percent: number | null;
+    bollinger_bands: {
+      upper: number | null;
+      middle: number | null;
+      lower: number | null;
+      position_percent: number | null;
+    };
     volatility: number | null;
     trend: "bullish" | "bearish" | "neutral";
     support_level: number | null;
@@ -282,6 +488,33 @@ export type OrchestratedAnalysis = {
   synthesis: SynthesisResult;
 };
 
+export type HistoricalReplayResult = {
+  ticker: string;
+  status: AnalysisStatus;
+  as_of: string;
+  replay_mode: "strict" | "research";
+  allow_reconstructed_prices: boolean;
+  lookahead_guard_passed: boolean;
+  archive_coverage_score: number;
+  trace: Array<{
+    component: string;
+    status: AnalysisStatus;
+    event_ids: string[];
+    event_count: number;
+    latest_available_at: string | null;
+    knowledge_modes: Array<"observed" | "reconstructed" | "derived">;
+    message: string;
+  }>;
+  market_data: OrchestratedAnalysis["market_data"];
+  technical: OrchestratedAnalysis["technical"];
+  news: NewsResult;
+  rag: OrchestratedAnalysis["rag"];
+  risk: OrchestratedAnalysis["risk"];
+  synthesis: SynthesisResult;
+  warnings: string[];
+  errors: string[];
+};
+
 export type PortfolioHolding = {
   ticker: string;
   quantity: number;
@@ -315,6 +548,39 @@ export type PortfolioPosition = PortfolioHolding & {
     technical_score: number | null;
     signal: "positive" | "negative" | "neutral";
   };
+  fundamentals: {
+    fiscal_date: string | null;
+    market_cap: number | null;
+    trailing_pe: number | null;
+    forward_pe: number | null;
+    price_to_book: number | null;
+    peg_ratio: number | null;
+    profit_margin_percent: number | null;
+    return_on_equity_percent: number | null;
+    debt_to_equity: number | null;
+    revenue_growth_percent: number | null;
+    earnings_growth_percent: number | null;
+    total_revenue: number | null;
+    net_income: number | null;
+    total_debt: number | null;
+    operating_cashflow: number | null;
+    data_completeness_score: number;
+  };
+  company: {
+    industry: string | null;
+    country: string | null;
+    website: string | null;
+    exchange: string | null;
+    market_cap: number | null;
+  };
+  historical_prices: Array<{
+    date: string;
+    open: number | null;
+    high: number | null;
+    low: number | null;
+    close: number;
+    volume: number | null;
+  }>;
 };
 
 export type PortfolioAllocation = {
@@ -369,6 +635,11 @@ export type PortfolioAnalysis = {
     jensen_alpha_percent: number | null;
     max_drawdown_percent: number | null;
     average_correlation: number | null;
+    curve: Array<{
+      date: string;
+      portfolio_return_percent: number;
+      benchmark_return_percent: number;
+    }>;
   };
   technical_summary: {
     weighted_score: number | null;

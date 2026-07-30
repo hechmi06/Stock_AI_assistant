@@ -17,9 +17,19 @@ import {
   TrendingDown,
   TrendingUp,
 } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { fetchFullAnalysis } from "../services/analysisApi";
 import type { OrchestratedAnalysis, RiskItem } from "../types";
+import {
+  ANALYSIS_TTL_MS,
+  readSnapshot,
+  snapshotAgeLabel,
+  writeSnapshot,
+} from "../utils/persistedAnalysis";
+import { RiskScale } from "./RiskScale";
+
+const analysisStorageKey = (ticker: string) =>
+  `stock-ai-analysis-v1:${ticker.trim().toUpperCase()}`;
 
 const RECOMMENDATION_LABELS = {
   favorable: "Favorable",
@@ -230,48 +240,74 @@ function HistoricalTable({ prices }: { prices: HistoryPoint[] }) {
   );
 }
 
-function RiskScale({ score }: { score: number }) {
-  const bounded = Math.max(0, Math.min(100, score));
-  const bands = [
-    { range: "0-14", label: "Minimal" },
-    { range: "15-29", label: "Faible" },
-    { range: "30-44", label: "Modéré" },
-    { range: "45-60", label: "Soutenu" },
-    { range: "61-100", label: "Élevé" },
-  ];
-
-  return (
-    <div className="asset-risk-scale" aria-label={`Score de risque ${bounded} sur 100`}>
-      <div className="asset-risk-marker" style={{ left: `${Math.max(3, Math.min(97, bounded))}%` }}><strong>{bounded}/100</strong><i /></div>
-      <div className="asset-risk-track" aria-hidden="true">
-        {bands.map((band) => <span key={band.range} />)}
-      </div>
-      <div className="asset-risk-band-labels">
-        {bands.map((band) => <div key={band.range}><span>{band.range}</span><strong>{band.label}</strong></div>)}
-      </div>
-    </div>
-  );
-}
-
 export function FullAnalysis({ ticker }: { ticker: string }) {
-  const [analysis, setAnalysis] = useState<OrchestratedAnalysis | null>(null);
+  const normalizedTicker = ticker.trim().toUpperCase();
+  const initialSnapshot = useRef(
+    readSnapshot<OrchestratedAnalysis>(analysisStorageKey(normalizedTicker)),
+  );
+  const activeTickerRef = useRef(normalizedTicker);
+  const [analysis, setAnalysis] = useState<OrchestratedAnalysis | null>(
+    initialSnapshot.current?.value ?? null,
+  );
+  const [savedAt, setSavedAt] = useState<number | null>(
+    initialSnapshot.current?.savedAt ?? null,
+  );
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [activeSection, setActiveSection] = useState("cours");
 
-  async function load(fresh = false) {
+  async function load(fresh = false, requestedTicker = normalizedTicker) {
     setLoading(true);
     setError(null);
     try {
-      setAnalysis(await fetchFullAnalysis(ticker, fresh));
+      const result = await fetchFullAnalysis(requestedTicker, fresh);
+      const snapshot = writeSnapshot(
+        analysisStorageKey(requestedTicker),
+        result,
+        ANALYSIS_TTL_MS,
+      );
+      if (activeTickerRef.current === requestedTicker) {
+        setAnalysis(result);
+        setSavedAt(snapshot?.savedAt ?? Date.now());
+      }
     } catch {
       setError("L'analyse multi-agents est indisponible. Vérifiez les services MCP, AI Backend et Gateway.");
     } finally {
-      setLoading(false);
+      if (activeTickerRef.current === requestedTicker) {
+        setLoading(false);
+      }
     }
   }
 
-  useEffect(() => { void load(false); }, [ticker]);
+  useEffect(() => {
+    activeTickerRef.current = normalizedTicker;
+    const cached = readSnapshot<OrchestratedAnalysis>(
+      analysisStorageKey(normalizedTicker),
+    );
+    setAnalysis(cached?.value ?? null);
+    setSavedAt(cached?.savedAt ?? null);
+    setActiveSection("cours");
+    if (!cached || cached.isExpired) {
+      void load(Boolean(cached), normalizedTicker);
+    } else {
+      setLoading(false);
+      setError(null);
+    }
+    // The normalized ticker is the cache identity for this screen.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [normalizedTicker]);
+
+  useEffect(() => {
+    if (!savedAt) return;
+    const remaining = savedAt + ANALYSIS_TTL_MS - Date.now();
+    const timer = window.setTimeout(
+      () => void load(true, normalizedTicker),
+      Math.max(0, remaining),
+    );
+    return () => window.clearTimeout(timer);
+    // A successful refresh changes savedAt and schedules the next refresh.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [normalizedTicker, savedAt]);
 
   function goTo(section: string) {
     setActiveSection(section);
@@ -333,6 +369,9 @@ export function FullAnalysis({ ticker }: { ticker: string }) {
           </div>
           <small>{market.raw_price?.market_state ?? "Données différées"} · {market.sources_used.join(", ")}</small>
         </div>
+        <span className={`analysis-freshness ${loading ? "refreshing" : ""}`}>
+          {loading ? "Actualisation en cours" : snapshotAgeLabel(savedAt)}
+        </span>
         <button className="analysis-refresh" type="button" onClick={() => void load(true)} disabled={loading} title="Actualiser les données">
           <RefreshCw size={15} className={loading ? "spin" : ""} />
           Actualiser
@@ -409,6 +448,10 @@ export function FullAnalysis({ ticker }: { ticker: string }) {
               <div><span>RSI 14</span><strong>{valueOrDash(technical.rsi)}</strong><small>{(technical.rsi ?? 50) > 70 ? "Zone de surachat" : (technical.rsi ?? 50) < 30 ? "Zone de survente" : "Zone neutre"}</small></div>
               <div><span>SMA 20</span><strong>{valueOrDash(technical.moving_averages.sma_20)}</strong><small>Tendance courte</small></div>
               <div><span>SMA 50</span><strong>{valueOrDash(technical.moving_averages.sma_50)}</strong><small>Tendance moyenne</small></div>
+              <div><span>EMA 200</span><strong>{valueOrDash(technical.moving_averages.ema_200)}</strong><small>Tendance longue</small></div>
+              <div><span>MACD histogramme</span><strong>{valueOrDash(technical.macd?.histogram)}</strong><small>Momentum croise</small></div>
+              <div><span>ATR 14</span><strong>{valueOrDash(technical.atr_percent, "%")}</strong><small>Amplitude moyenne</small></div>
+              <div><span>Bollinger</span><strong>{valueOrDash(technical.bollinger_bands?.position_percent, "%")}</strong><small>Position dans le canal</small></div>
               <div><span>Volatilité</span><strong>{valueOrDash(technical.volatility, "%")}</strong><small>20 dernières séances</small></div>
               <div><span>Volume relatif</span><strong>{valueOrDash(technical.volume_analysis?.volume_ratio, "×")}</strong><small>{technical.volume_analysis?.interpretation ?? "Indisponible"}</small></div>
               <div><span>Signal</span><strong className={technical.signal}>{technical.signal}</strong><small>Score {valueOrDash(technical.technical_score, "/100")}</small></div>

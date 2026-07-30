@@ -14,6 +14,7 @@ import {
 } from "./marketData.js";
 import { getStockNews } from "./news.js";
 import { getSecDocumentText, getSecFilings } from "./sec.js";
+import { getSocialMediaPosts } from "./socialMedia.js";
 
 function sendJson(response: ServerResponse, status: number, payload: unknown) {
   response.writeHead(status, {
@@ -83,6 +84,19 @@ const server = createServer(async (request, response) => {
           name: url.searchParams.get("name") ?? undefined,
           extract: url.searchParams.get("extract") === "1" || url.searchParams.get("extract") === "true",
         }),
+      );
+      return;
+    }
+
+    const socialMediaMatch = url.pathname.match(/^\/social-media\/([^/]+)$/);
+    if (request.method === "GET" && socialMediaMatch) {
+      sendJson(
+        response,
+        200,
+        await getSocialMediaPosts(
+          decodeURIComponent(socialMediaMatch[1]),
+          url.searchParams.get("name") ?? undefined,
+        ),
       );
       return;
     }

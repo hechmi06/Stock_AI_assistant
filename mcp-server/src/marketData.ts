@@ -466,6 +466,10 @@ function periodToCutoffDays(period: string): number {
       return 380;
     case "2y":
       return 760;
+    case "5y":
+      return 1900;
+    case "10y":
+      return 3800;
     default:
       return 200;
   }
@@ -560,13 +564,17 @@ function helperPath() {
   return fileURLToPath(new URL("../src/yfinance_helper.py", import.meta.url));
 }
 
-async function fetchYfinanceData(ticker: string, period = "6mo") {
+async function fetchYfinanceData(ticker: string, period = "6mo", historyOnly = false) {
   const pythonPath = process.env.YFINANCE_PYTHON_PATH ?? process.env.PYTHON_PATH ?? "python";
+  const args = [helperPath(), "--ticker", ticker, "--period", period];
+  if (historyOnly) {
+    args.push("--history-only");
+  }
   const { stdout } = await execFileAsync(
     pythonPath,
-    [helperPath(), "--ticker", ticker, "--period", period],
+    args,
     {
-      timeout: 15_000,
+      timeout: historyOnly ? 30_000 : 15_000,
       windowsHide: true,
       maxBuffer: 1024 * 1024 * 4,
     },
@@ -898,7 +906,7 @@ export async function getHistoricalPrices(ticker: string, period = "6mo"): Promi
   const symbol = ticker.trim().toUpperCase();
 
   try {
-    const yfinance = await fetchYfinanceData(symbol, period);
+    const yfinance = await fetchYfinanceData(symbol, period, true);
     const history = yfinance.historical_prices ?? [];
     if (history.length > 0) {
       return history;
@@ -912,7 +920,11 @@ export async function getHistoricalPrices(ticker: string, period = "6mo"): Promi
     return tiingo;
   }
 
-  return fetchTwelveHistoricalPrices(symbol);
+  const requestedPoints = Math.min(
+    5000,
+    Math.max(90, Math.ceil((periodToCutoffDays(period) / 365) * 252) + 10),
+  );
+  return fetchTwelveHistoricalPrices(symbol, String(requestedPoints));
 }
 
 export async function getCompanyProfile(ticker: string): Promise<CompanyProfile> {
