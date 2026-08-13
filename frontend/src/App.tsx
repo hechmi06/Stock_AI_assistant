@@ -1,18 +1,10 @@
 import {
   BrainCircuit,
   BriefcaseBusiness,
-  CalendarDays,
-  ChevronDown,
   ChevronsRight,
-  Clock3,
-  Download,
-  Folder,
-  Globe2,
   Grid2X2,
-  Home,
   LineChart,
   LogOut,
-  Network,
   RefreshCw,
   Search,
   Sparkles,
@@ -28,7 +20,6 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { AgentMetrics } from "./components/AgentMetrics";
 import { ConceptContextHelp } from "./components/ConceptContextHelp";
 import { FullAnalysis } from "./components/FullAnalysis";
-import { HistoricalBacktest } from "./components/HistoricalBacktest";
 import { EducationChat } from "./components/EducationChat";
 import { NewsFeed } from "./components/NewsFeed";
 import { PortfolioDashboard } from "./components/PortfolioDashboard";
@@ -44,7 +35,6 @@ type AppView =
   | "analysis"
   | "portfolio"
   | "recommendation"
-  | "backtesting"
   | "dashboard"
   | "profile";
 
@@ -54,7 +44,6 @@ const APP_VIEWS: AppView[] = [
   "analysis",
   "portfolio",
   "recommendation",
-  "backtesting",
   "dashboard",
   "profile",
 ];
@@ -451,12 +440,6 @@ export function App({
         <aside className="rail">
           <div className="rail-logo">BI</div>
           <nav className="rail-nav" aria-label="Navigation principale">
-            <button type="button" title="Accueil">
-              <Home size={20} />
-            </button>
-            <button type="button" title="Assistant IA">
-              <BrainCircuit size={20} />
-            </button>
             <button className={view === "trading" ? "active" : ""} type="button" title="Trading" onClick={() => setView("trading")}>
               <LineChart size={20} />
             </button>
@@ -465,21 +448,6 @@ export function App({
             </button>
             <button className={view === "recommendation" ? "active" : ""} type="button" title="Portefeuille recommande" onClick={() => setView("recommendation")}>
               <Sparkles size={20} />
-            </button>
-            <button type="button" title="Dossiers">
-              <Folder size={20} />
-            </button>
-            <button type="button" title="Réseau">
-              <Network size={20} />
-            </button>
-            <button className={view === "backtesting" ? "active" : ""} type="button" title="Validation historique" onClick={() => setView("backtesting")}>
-              <Clock3 size={20} />
-            </button>
-            <button type="button" title="Mondial">
-              <Globe2 size={20} />
-            </button>
-            <button type="button" title="Calendrier">
-              <CalendarDays size={20} />
             </button>
           </nav>
           <div className="user-rail-profile">
@@ -497,9 +465,6 @@ export function App({
               <LogOut size={16} />
             </button>
           </div>
-          <button className="collapse-button" type="button" title="Réduire">
-            <ChevronsRight size={20} />
-          </button>
         </aside>
 
         {/* ── Main ── */}
@@ -547,13 +512,6 @@ export function App({
                   <Sparkles size={15} /> Recommandation
                 </button>
                 <button
-                  className={view === "backtesting" ? "selected" : ""}
-                  type="button"
-                  onClick={() => setView("backtesting")}
-                >
-                  <Clock3 size={15} /> Validation
-                </button>
-                <button
                   className={view === "dashboard" ? "selected" : ""}
                   type="button"
                   onClick={() => setView("dashboard")}
@@ -561,9 +519,6 @@ export function App({
                   <Grid2X2 size={15} /> Dashboard
                 </button>
               </div>
-              <button className="export-button" type="button">
-                <Download size={15} /> Exporter <ChevronDown size={14} />
-              </button>
               <span className="live-pill">LIVE</span>
               <span className="date-pill">
                 <Timer size={15} /> {formatDateTime(dashboard.updated_at)}
@@ -578,8 +533,6 @@ export function App({
               onUserUpdated={onUserUpdated}
               onLogout={onLogout}
             />
-          ) : view === "backtesting" ? (
-            <HistoricalBacktest ticker={selectedSymbol} />
           ) : view === "dashboard" ? (
             <AgentMetrics />
           ) : view === "recommendation" ? (
